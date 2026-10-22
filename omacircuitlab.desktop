@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=OmaCircuitLab
+GenericName=Circuit Simulator
+Comment=Build breadboard circuits and learn electronics: LEDs, sensors, transistors, motors
+Exec=omarchy-shell shell toggle io.github.dankestrick.omacircuitlab
+TryExec=omarchy-shell
+Icon=OMACIRCUIT_ICON
+Terminal=false
+StartupNotify=false
+Categories=Education;Electronics;Science;
+Keywords=circuit;breadboard;electronics;led;resistor;arduino;robot;simulator;learn;

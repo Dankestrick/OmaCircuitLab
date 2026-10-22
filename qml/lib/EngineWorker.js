@@ -1,0 +1,70 @@
+.import "Engine.js" as Engine
+
+// One circuit, one state, one request at a time. The UI waits for the reply
+// before it sends the next message. There is no timer in here: "step" runs
+// the requested steps and answers once, and gives up after about 25 ms so a
+// heavy circuit can't freeze the shell.
+
+var netlist = null
+var state = Engine.createState()
+
+function hasCharge(nl, st) {
+  if (!nl || !nl.elements || !st || !st.capV) return false
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (el.type !== "capacitor" && el.type !== "electrolytic") continue
+    if (st.burnt && st.burnt[el.id]) continue
+    var v = st.capV[el.id]
+    if (typeof v === "number" && isFinite(v) && Math.abs(v) > 0.05) return true
+  }
+  return false
+}
+
+function fail(message) {
+  return {
+    ok: false,
+    converged: false,
+    nodeVolts: [],
+    parts: {},
+    warnings: [{ part: "", level: "warn", message: message }]
+  }
+}
+
+WorkerScript.onMessage = function (msg) {
+  if (!msg || !msg.cmd) return
+
+  if (msg.cmd === "reset") {
+    state = Engine.createState()
+    netlist = null
+    return
+  }
+
+  if (msg.cmd === "load") {
+    netlist = msg.netlist || null
+    if (!netlist) {
+      WorkerScript.sendMessage({ kind: "result", result: fail("Nothing on the bench to simulate.") })
+      return
+    }
+    var dt = hasCharge(netlist, state) ? 0.001 : 0
+    WorkerScript.sendMessage({ kind: "result", result: Engine.solve(netlist, state, dt) })
+    return
+  }
+
+  if (msg.cmd === "step") {
+    if (!netlist) {
+      WorkerScript.sendMessage({ kind: "result", result: fail("Press Run first.") })
+      return
+    }
+    var steps = msg.steps > 0 ? msg.steps | 0 : 1
+    if (steps > 1000000) steps = 1000000
+    var h = msg.dt > 0 ? msg.dt : 0.001
+    var t0 = Date.now()
+    var result = null
+    for (var i = 0; i < steps; i++) {
+      result = Engine.solve(netlist, state, h)
+      if (!result || result.ok === false) break
+      if (Date.now() - t0 > 25) break
+    }
+    WorkerScript.sendMessage({ kind: "result", result: result })
+  }
+}

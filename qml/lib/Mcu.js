@@ -1,0 +1,1102 @@
+.pragma library
+
+// OmaDuino: a small Arduino-style microcontroller. This file reads a sketch
+// written in the everyday subset of Arduino C (setup/loop, variables, if,
+// for, while, functions, arrays, Servo, Serial) and runs it one step at a
+// time against simulated pins. It never uses eval: sketches are parsed into a
+// tree and walked here, with an instruction budget so a runaway loop can't
+// freeze anything.
+//
+//   var prog = Mcu.compile(source)      -> { ok, errors: [{ line, message }], program }
+//   var vm = Mcu.create(prog.program)
+//   vm.run(untilMicros, io)             -> advances the sketch until that time
+//   vm.pins[n] = { mode, level, pwm, servo, tone }   outputs for the engine
+//   vm.serial (text), vm.error (runtime error or "")
+//   io.volts(pin) -> volts at that pin; io.pulseIn(pin, level, timeoutUs) -> µs (optional)
+
+var PIN_COUNT = 20              // D0..D13, A0..A5 = 14..19
+var PWM_PINS = { 3: true, 5: true, 6: true, 9: true, 10: true, 11: true }
+var OP_MICROS = 1               // one statement ≈ 1 µs on a real 16 MHz board
+var STEP_BUDGET = 400           // max steps per run() call: a sketch with no delay() runs slower than a real board but stays cheap on the PC
+
+var constants = {
+  HIGH: 1, LOW: 0, INPUT: 0, OUTPUT: 1, INPUT_PULLUP: 2, LED_BUILTIN: 13,
+  true: 1, false: 0, A0: 14, A1: 15, A2: 16, A3: 17, A4: 18, A5: 19, PI: Math.PI
+}
+
+var typeNames = { "int": "int", "long": "int", "short": "int", "byte": "int", "char": "int", "unsigned": "int",
+  "uint8_t": "int", "uint16_t": "int", "uint32_t": "int", "int8_t": "int", "int16_t": "int", "int32_t": "int",
+  "size_t": "int", "word": "int", "float": "float", "double": "float", "bool": "bool", "boolean": "bool",
+  "void": "void", "String": "string", "Servo": "Servo", "const": null, "static": null, "volatile": null }
+
+// ------------------------------------------------------------------ tokens
+
+function tokenize(src) {
+  var toks = [], i = 0, line = 1, n = src.length
+  function push(type, value) { toks.push({ type: type, value: value, line: line }) }
+  while (i < n) {
+    var c = src[i]
+    if (c === "\n") { line++; i++; continue }
+    if (c === " " || c === "\t" || c === "\r") { i++; continue }
+    if (c === "/" && src[i + 1] === "/") { while (i < n && src[i] !== "\n") i++; continue }
+    if (c === "/" && src[i + 1] === "*") {
+      i += 2
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { if (src[i] === "\n") line++; i++ }
+      i += 2; continue
+    }
+    if (c === "#") {
+      var start = i
+      while (i < n && src[i] !== "\n") i++
+      push("directive", src.substring(start, i))
+      continue
+    }
+    if (/[0-9]/.test(c) || (c === "." && /[0-9]/.test(src[i + 1]))) {
+      var s = i
+      if (c === "0" && (src[i + 1] === "x" || src[i + 1] === "X")) { i += 2; while (/[0-9a-fA-F]/.test(src[i])) i++ }
+      else if (c === "0" && (src[i + 1] === "b" || src[i + 1] === "B")) { i += 2; while (/[01]/.test(src[i])) i++ }
+      else { while (/[0-9.]/.test(src[i])) i++; if (src[i] === "e" || src[i] === "E") { i++; if (src[i] === "-" || src[i] === "+") i++; while (/[0-9]/.test(src[i])) i++ } }
+      var text = src.substring(s, i)
+      var isFloat = /[.eE]/.test(text) && !/^0[xX]/.test(text)
+      while (/[uUlLfF]/.test(src[i])) { if (src[i] === "f" || src[i] === "F") isFloat = true; i++ }
+      var val = /^0[bB]/.test(text) ? parseInt(text.substring(2), 2) : Number(text)
+      toks.push({ type: "num", value: val, isFloat: isFloat, line: line })
+      continue
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      var s2 = i
+      while (i < n && /[A-Za-z0-9_]/.test(src[i])) i++
+      push("id", src.substring(s2, i))
+      continue
+    }
+    if (c === '"' || c === "'") {
+      var q = c, out = ""
+      i++
+      while (i < n && src[i] !== q) {
+        if (src[i] === "\\") { i++; var e = src[i]; out += e === "n" ? "\n" : e === "t" ? "\t" : e === "0" ? "" : e }
+        else { if (src[i] === "\n") line++; out += src[i] }
+        i++
+      }
+      i++
+      if (q === "'") toks.push({ type: "num", value: out.length ? out.charCodeAt(0) : 0, isFloat: false, line: line })
+      else push("str", out)
+      continue
+    }
+    var three = src.substr(i, 3), two = src.substr(i, 2)
+    if (three === "<<=" || three === ">>=") { push("op", three); i += 3; continue }
+    if (["==", "!=", "<=", ">=", "&&", "||", "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<", ">>", "::"].indexOf(two) >= 0) { push("op", two); i += 2; continue }
+    if ("+-*/%<>=!&|^~?:;,.(){}[]".indexOf(c) >= 0) { push("op", c); i++; continue }
+    throw { line: line, message: "I don't understand the character '" + c + "'." }
+  }
+  push("eof", "")
+  return toks
+}
+
+// ------------------------------------------------------------------ parser
+
+function Parser(toks) { this.t = toks; this.p = 0; this.defines = {} }
+Parser.prototype.peek = function (k) { return this.t[this.p + (k || 0)] }
+Parser.prototype.next = function () { return this.t[this.p++] }
+Parser.prototype.is = function (v, k) { var t = this.peek(k); return t.type !== "str" && t.value === v }
+Parser.prototype.eat = function (v) { if (this.is(v)) { this.p++; return true } return false }
+Parser.prototype.expect = function (v, what) {
+  var t = this.peek()
+  if (t.value !== v || t.type === "str") throw { line: t.line, message: "Expected '" + v + "'" + (what ? " " + what : "") + " but found '" + (t.value === "" ? "end of sketch" : t.value) + "'." + (v === ";" ? " Did you forget a semicolon at the end of the line before?" : "") }
+  this.p++
+  return t
+}
+
+Parser.prototype.isType = function (k) {
+  var t = this.peek(k)
+  return t.type === "id" && typeNames.hasOwnProperty(t.value)
+}
+
+// Reads "const unsigned long" etc. Returns a base type name.
+Parser.prototype.type = function () {
+  var base = null
+  while (this.isType()) {
+    var w = this.next().value
+    if (typeNames[w]) base = base && base !== "int" ? base : typeNames[w]
+  }
+  return base || "int"
+}
+
+Parser.prototype.program = function () {
+  var globals = [], funcs = {}
+  while (this.peek().type !== "eof") {
+    var t = this.peek()
+    if (t.type === "directive") { this.next(); this.directive(t); continue }
+    if (this.eat(";")) continue
+    if (!this.isType()) throw { line: t.line, message: "Expected a declaration like 'int x = 0;' or 'void loop() {', but found '" + t.value + "'." }
+    var line = t.line
+    var type = this.type()
+    var name = this.next()
+    if (name.type !== "id") throw { line: name.line, message: "Expected a name after the type." }
+    if (this.is("(")) {
+      this.next()
+      var params = []
+      if (!this.is(")")) {
+        do {
+          if (this.is("void") && this.is(")", 1)) { this.next(); break }
+          var pt = this.type()
+          var pn = this.next()
+          if (pn.type !== "id") throw { line: pn.line, message: "Expected a parameter name." }
+          params.push({ name: pn.value, type: pt })
+        } while (this.eat(","))
+      }
+      this.expect(")")
+      if (this.eat(";")) continue  // a prototype
+      var body = this.block()
+      funcs[name.value] = { name: name.value, type: type, params: params, body: body, line: line }
+    } else {
+      this.p--
+      var decls = this.declList(type, line)
+      for (var i = 0; i < decls.length; i++) globals.push(decls[i])
+    }
+  }
+  return { globals: globals, funcs: funcs }
+}
+
+Parser.prototype.directive = function (t) {
+  var m = /^#\s*define\s+([A-Za-z_]\w*)\s+(.+)$/.exec(t.value.trim())
+  if (m) {
+    var sub = tokenize(m[2])
+    sub.pop()
+    this.defines[m[1]] = sub
+  }
+  // #include lines are fine: Servo and Serial are built in.
+}
+
+// "int a = 1, b[3] = {1,2,3};"
+Parser.prototype.declList = function (type, line) {
+  var out = []
+  do {
+    var name = this.next()
+    if (name.type !== "id") throw { line: name.line, message: "Expected a variable name." }
+    var d = { kind: "decl", name: name.value, type: type, line: name.line, size: null, init: null }
+    if (this.eat("[")) {
+      d.size = this.is("]") ? -1 : this.expr()
+      this.expect("]")
+    }
+    if (type === "Servo" && this.is("(")) throw { line: name.line, message: "Write 'Servo " + name.value + ";' and then " + name.value + ".attach(pin) in setup()." }
+    if (this.eat("=")) {
+      if (this.eat("{")) {
+        var items = []
+        if (!this.is("}")) do { items.push(this.expr()) } while (this.eat(",") && !this.is("}"))
+        this.expect("}")
+        d.init = { kind: "list", items: items, line: name.line }
+      } else d.init = this.expr()
+    }
+    out.push(d)
+  } while (this.eat(","))
+  this.expect(";", "after the declaration")
+  return out
+}
+
+Parser.prototype.block = function () {
+  this.expect("{")
+  var body = []
+  while (!this.is("}")) {
+    if (this.peek().type === "eof") throw { line: this.peek().line, message: "A '{' was never closed with '}'." }
+    body.push(this.statement())
+  }
+  this.next()
+  return { kind: "block", body: body }
+}
+
+Parser.prototype.statement = function () {
+  var t = this.peek()
+  var line = t.line
+  if (t.type === "directive") { this.next(); this.directive(t); return { kind: "empty" } }
+  if (this.is("{")) return this.block()
+  if (this.eat(";")) return { kind: "empty" }
+  if (this.isType()) { var ty = this.type(); return { kind: "decls", list: this.declList(ty, line), line: line } }
+  if (this.eat("if")) {
+    this.expect("("); var c = this.expr(); this.expect(")")
+    var th = this.statement(), el = null
+    if (this.eat("else")) el = this.statement()
+    return { kind: "if", cond: c, then: th, els: el, line: line }
+  }
+  if (this.eat("while")) {
+    this.expect("("); var wc = this.expr(); this.expect(")")
+    return { kind: "while", cond: wc, body: this.statement(), line: line }
+  }
+  if (this.eat("do")) {
+    var db = this.statement()
+    this.expect("while"); this.expect("("); var dc = this.expr(); this.expect(")"); this.expect(";")
+    return { kind: "dowhile", cond: dc, body: db, line: line }
+  }
+  if (this.eat("for")) {
+    this.expect("(")
+    var init = null
+    if (this.isType()) { var ft = this.type(); init = { kind: "decls", list: this.declList(ft, line), line: line } }
+    else if (!this.eat(";")) { init = { kind: "expr", e: this.expr(), line: line }; this.expect(";") }
+    var cond = this.is(";") ? null : this.expr(); this.expect(";")
+    var step = this.is(")") ? null : this.expr(); this.expect(")")
+    return { kind: "for", init: init, cond: cond, step: step, body: this.statement(), line: line }
+  }
+  if (this.eat("switch")) {
+    this.expect("("); var sv = this.expr(); this.expect(")"); this.expect("{")
+    var cases = []
+    while (!this.eat("}")) {
+      if (this.eat("case")) { var cv = this.expr(); this.expect(":"); cases.push({ value: cv, body: [] }) }
+      else if (this.eat("default")) { this.expect(":"); cases.push({ value: null, body: [] }) }
+      else {
+        if (!cases.length) throw { line: this.peek().line, message: "Expected 'case' inside switch." }
+        cases[cases.length - 1].body.push(this.statement())
+      }
+    }
+    return { kind: "switch", value: sv, cases: cases, line: line }
+  }
+  if (this.eat("break")) { this.expect(";"); return { kind: "break", line: line } }
+  if (this.eat("continue")) { this.expect(";"); return { kind: "continue", line: line } }
+  if (this.eat("return")) {
+    var rv = this.is(";") ? null : this.expr()
+    this.expect(";")
+    return { kind: "return", e: rv, line: line }
+  }
+  var e = this.expr()
+  this.expect(";")
+  return { kind: "expr", e: e, line: line }
+}
+
+var binPrec = {
+  "||": 1, "&&": 2, "|": 3, "^": 4, "&": 5, "==": 6, "!=": 6,
+  "<": 7, "<=": 7, ">": 7, ">=": 7, "<<": 8, ">>": 8, "+": 9, "-": 9, "*": 10, "/": 10, "%": 10
+}
+var assignOps = { "=": true, "+=": true, "-=": true, "*=": true, "/=": true, "%=": true, "&=": true, "|=": true, "^=": true, "<<=": true, ">>=": true }
+
+Parser.prototype.expr = function () {
+  var left = this.ternary()
+  var t = this.peek()
+  if (t.type === "op" && assignOps[t.value]) {
+    this.next()
+    if (left.kind !== "var" && left.kind !== "index") throw { line: t.line, message: "You can only assign to a variable." }
+    return { kind: "assign", op: t.value, target: left, value: this.expr(), line: t.line }
+  }
+  return left
+}
+
+Parser.prototype.ternary = function () {
+  var c = this.binary(1)
+  if (this.eat("?")) {
+    var a = this.expr(); this.expect(":"); var b = this.ternary()
+    return { kind: "cond", c: c, a: a, b: b }
+  }
+  return c
+}
+
+Parser.prototype.binary = function (minPrec) {
+  var left = this.unary()
+  for (;;) {
+    var t = this.peek()
+    var prec = t.type === "op" ? binPrec[t.value] : undefined
+    if (prec === undefined || prec < minPrec) return left
+    this.next()
+    var right = this.binary(prec + 1)
+    left = { kind: "bin", op: t.value, a: left, b: right, line: t.line }
+  }
+}
+
+Parser.prototype.unary = function () {
+  var t = this.peek()
+  if (t.type === "op" && (t.value === "!" || t.value === "-" || t.value === "+" || t.value === "~")) {
+    this.next(); return { kind: "un", op: t.value, a: this.unary(), line: t.line }
+  }
+  if (t.type === "op" && (t.value === "++" || t.value === "--")) {
+    this.next(); var target = this.unary()
+    return { kind: "incr", op: t.value, prefix: true, target: target, line: t.line }
+  }
+  if (t.type === "op" && t.value === "(" && this.isType(1) && this.is(")", 2)) {
+    this.next(); var ct = this.type(); this.expect(")")
+    return { kind: "cast", type: ct, a: this.unary(), line: t.line }
+  }
+  return this.postfix()
+}
+
+Parser.prototype.postfix = function () {
+  var e = this.primary()
+  for (;;) {
+    var t = this.peek()
+    if (this.eat("(")) {
+      var args = []
+      if (!this.is(")")) do { args.push(this.expr()) } while (this.eat(","))
+      this.expect(")")
+      e = { kind: "call", callee: e, args: args, line: t.line }
+    } else if (this.eat("[")) {
+      var idx = this.expr(); this.expect("]")
+      e = { kind: "index", target: e, index: idx, line: t.line }
+    } else if (this.eat(".")) {
+      var m = this.next()
+      e = { kind: "member", target: e, name: m.value, line: t.line }
+    } else if (t.type === "op" && (t.value === "++" || t.value === "--")) {
+      this.next()
+      e = { kind: "incr", op: t.value, prefix: false, target: e, line: t.line }
+    } else return e
+  }
+}
+
+Parser.prototype.primary = function () {
+  var t = this.next()
+  if (t.type === "num") return { kind: "num", value: t.value, t: t.isFloat ? "float" : "int" }
+  if (t.type === "str") return { kind: "str", value: t.value }
+  if (t.type === "id") {
+    if (this.defines[t.value]) {
+      // Splice a #define in place and parse it as an expression.
+      var sub = this.defines[t.value].map(function (x) { return { type: x.type, value: x.value, isFloat: x.isFloat, line: t.line } })
+      var saved = this.defines
+      var inner = new Parser(sub.concat([{ type: "eof", value: "", line: t.line }]))
+      inner.defines = saved
+      return inner.expr()
+    }
+    if (t.value === "Serial" || t.value === "Math") return { kind: "object", name: t.value }
+    return { kind: "var", name: t.value, line: t.line }
+  }
+  if (t.value === "(") { var e = this.expr(); this.expect(")"); return e }
+  throw { line: t.line, message: "Unexpected '" + (t.value === "" ? "end of sketch" : t.value) + "'." }
+}
+
+// ------------------------------------------------------------------ compile
+
+function compile(src) {
+  try {
+    var parser = new Parser(tokenize(String(src || "")))
+    var program = parser.program()
+    var errors = []
+    if (!program.funcs.setup) errors.push({ line: 1, message: "Every sketch needs a 'void setup() { }' function. It runs once at the start." })
+    if (!program.funcs.loop) errors.push({ line: 1, message: "Every sketch needs a 'void loop() { }' function. It runs over and over." })
+    if (errors.length) return { ok: false, errors: errors, program: null }
+    return { ok: true, errors: [], program: program }
+  } catch (e) {
+    if (e && e.message && e.line) return { ok: false, errors: [{ line: e.line, message: e.message }], program: null }
+    return { ok: false, errors: [{ line: 1, message: String(e && e.message ? e.message : e) }], program: null }
+  }
+}
+
+// ------------------------------------------------------------------ runtime
+
+function RuntimeError(line, message) { this.line = line; this.message = message }
+
+function Scope(parent) { this.vars = {}; this.parent = parent }
+Scope.prototype.find = function (name) {
+  for (var s = this; s; s = s.parent) if (s.vars.hasOwnProperty(name)) return s.vars
+  return null
+}
+
+function coerce(type, v) {
+  if (type === "int") { v = Number(v); return isFinite(v) ? Math.trunc(v) : 0 }
+  if (type === "bool") return v ? 1 : 0
+  if (type === "float") return Number(v)
+  return v
+}
+
+function create(program) {
+  var vm = {
+    program: program,
+    time: 0,               // microseconds of sketch time
+    wakeAt: 0,             // delay() sleeps until this time
+    pins: [],
+    serial: "",
+    error: "",
+    errorLine: 0,
+    gen: null,
+    started: false,
+    globals: new Scope(null),
+    randState: 12345,
+    io: null,
+    run: function (until, io) { return runVm(vm, until, io) },
+    reset: function () { resetVm(vm) }
+  }
+  resetVm(vm)
+  return vm
+}
+
+function resetVm(vm) {
+  vm.time = 0; vm.wakeAt = 0; vm.serial = ""; vm.error = ""; vm.errorLine = 0; vm.started = false; vm.gen = null
+  vm.pins = []
+  for (var i = 0; i < PIN_COUNT; i++) vm.pins.push({ mode: "in", level: 0, pwm: null, servo: null, tone: null })
+  vm.globals = new Scope(null)
+}
+
+function serialWrite(vm, text) {
+  vm.serial += text
+  if (vm.serial.length > 4000) vm.serial = vm.serial.substring(vm.serial.length - 3000)
+}
+
+// Run until `until` µs. Each pass of loop() is a generator, so delay() just
+// pauses it. A budget of steps per call keeps a tight loop from hanging.
+function runVm(vm, until, io) {
+  if (vm.error) return
+  vm.io = io
+  var budget = STEP_BUDGET
+  try {
+    if (!vm.started) {
+      vm.started = true
+      var init = initGlobals(vm)
+      while (!init.next().done) {}
+      vm.gen = callFunction(vm, "setup", [], 0)
+      vm.inSetup = true
+    }
+    while (vm.time < until && budget > 0) {
+      if (vm.wakeAt > vm.time) { vm.time = Math.min(vm.wakeAt, until); continue }
+      var step = vm.gen.next()
+      budget--
+      if (step.done) {
+        vm.inSetup = false
+        vm.gen = callFunction(vm, "loop", [], 0)
+        vm.time += 1
+        continue
+      }
+      var y = step.value
+      if (y && y.delay !== undefined) vm.wakeAt = vm.time + Math.max(0, y.delay)
+      else vm.time += (y && y.ops ? y.ops : 1) * OP_MICROS
+    }
+    if (vm.time < until) vm.time = until  // out of budget: the sketch is busy, let time move on
+  } catch (e) {
+    vm.error = e && e.message ? e.message : String(e)
+    vm.errorLine = e && e.line ? e.line : 0
+  }
+}
+
+function* initGlobals(vm) {
+  var gl = vm.program.globals
+  for (var i = 0; i < gl.length; i++) yield* declare(vm, vm.globals, gl[i])
+}
+
+function* declare(vm, scope, d) {
+  if (d.type === "Servo") {
+    if (d.size !== null) {
+      var n = yield* evaluate(vm, scope, d.size)
+      var arr = []; for (var k = 0; k < n; k++) arr.push({ servo: true, pin: -1, angle: 90 })
+      scope.vars[d.name] = { type: "Servo", value: arr, array: true }
+    } else scope.vars[d.name] = { type: "Servo", value: { servo: true, pin: -1, angle: 90 } }
+    return
+  }
+  if (d.size !== null) {
+    var size = d.size === -1 ? (d.init && d.init.items ? d.init.items.length : 0) : yield* evaluate(vm, scope, d.size)
+    if (size < 0 || size > 4096) throw new RuntimeError(d.line, "Array " + d.name + " is too big (keep it under 4096).")
+    var a = []
+    for (var j = 0; j < size; j++) a.push(d.type === "string" ? "" : 0)
+    if (d.init && d.init.kind === "list") {
+      for (var m = 0; m < d.init.items.length && m < size; m++) a[m] = coerce(d.type, yield* evaluate(vm, scope, d.init.items[m]))
+    } else if (d.init && d.init.kind === "str") {
+      for (var s = 0; s < d.init.value.length && s < size; s++) a[s] = d.init.value.charCodeAt(s)
+    }
+    scope.vars[d.name] = { type: d.type, value: a, array: true }
+    return
+  }
+  var v = d.init ? yield* evaluate(vm, scope, d.init) : (d.type === "string" ? "" : 0)
+  scope.vars[d.name] = { type: d.type, value: d.type === "string" ? String(v) : coerce(d.type, v) }
+}
+
+function Signal(kind, value) { this.kind = kind; this.value = value }
+
+function* callFunction(vm, name, args, line) {
+  var f = vm.program.funcs[name]
+  if (!f) throw new RuntimeError(line, "There is no function called '" + name + "'.")
+  if (args.length !== f.params.length) throw new RuntimeError(line, name + "() needs " + f.params.length + " value" + (f.params.length === 1 ? "" : "s") + " but got " + args.length + ".")
+  vm.depth = (vm.depth || 0) + 1
+  if (vm.depth > 64) { vm.depth = 0; throw new RuntimeError(line, "Too many functions calling each other (more than 64 deep).") }
+  var scope = new Scope(vm.globals)
+  for (var i = 0; i < args.length; i++) scope.vars[f.params[i].name] = { type: f.params[i].type, value: coerce(f.params[i].type, args[i]) }
+  var result = 0
+  try {
+    yield* execBlock(vm, scope, f.body.body)
+  } catch (sig) {
+    if (sig instanceof Signal && sig.kind === "return") result = sig.value
+    else { vm.depth--; throw sig }
+  }
+  vm.depth--
+  return f.type === "void" ? 0 : coerce(f.type, result)
+}
+
+function* execBlock(vm, scope, body) {
+  for (var i = 0; i < body.length; i++) yield* exec(vm, scope, body[i])
+}
+
+function* exec(vm, scope, s) {
+  yield { ops: 1 }
+  switch (s.kind) {
+    case "empty": return
+    case "block": yield* execBlock(vm, new Scope(scope), s.body); return
+    case "decls": for (var i = 0; i < s.list.length; i++) yield* declare(vm, scope, s.list[i]); return
+    case "expr": yield* evaluate(vm, scope, s.e); return
+    case "if":
+      if (yield* evaluate(vm, scope, s.cond)) yield* exec(vm, scope, s.then)
+      else if (s.els) yield* exec(vm, scope, s.els)
+      return
+    case "while":
+      while (yield* evaluate(vm, scope, s.cond)) {
+        try { yield* exec(vm, scope, s.body) } catch (sig) {
+          if (sig instanceof Signal && sig.kind === "break") break
+          if (sig instanceof Signal && sig.kind === "continue") continue
+          throw sig
+        }
+      }
+      return
+    case "dowhile":
+      do {
+        try { yield* exec(vm, scope, s.body) } catch (sig2) {
+          if (sig2 instanceof Signal && sig2.kind === "break") break
+          if (sig2 instanceof Signal && sig2.kind === "continue") continue
+          throw sig2
+        }
+      } while (yield* evaluate(vm, scope, s.cond))
+      return
+    case "for":
+      var fs = new Scope(scope)
+      if (s.init) yield* exec(vm, fs, s.init)
+      while (s.cond === null || (yield* evaluate(vm, fs, s.cond))) {
+        try { yield* exec(vm, fs, s.body) } catch (sig3) {
+          if (sig3 instanceof Signal && sig3.kind === "break") break
+          if (!(sig3 instanceof Signal && sig3.kind === "continue")) throw sig3
+        }
+        if (s.step) yield* evaluate(vm, fs, s.step)
+      }
+      return
+    case "switch":
+      var v = yield* evaluate(vm, scope, s.value)
+      var start = -1
+      for (var c = 0; c < s.cases.length && start < 0; c++)
+        if (s.cases[c].value !== null && (yield* evaluate(vm, scope, s.cases[c].value)) === v) start = c
+      if (start < 0) for (var d = 0; d < s.cases.length; d++) if (s.cases[d].value === null) start = d
+      if (start < 0) return
+      try {
+        for (var k = start; k < s.cases.length; k++) yield* execBlock(vm, scope, s.cases[k].body)
+      } catch (sig4) {
+        if (!(sig4 instanceof Signal && sig4.kind === "break")) throw sig4
+      }
+      return
+    case "break": throw new Signal("break")
+    case "continue": throw new Signal("continue")
+    case "return": throw new Signal("return", s.e ? yield* evaluate(vm, scope, s.e) : 0)
+  }
+}
+
+function lookup(vm, scope, node) {
+  if (node.kind === "var") {
+    var vars = scope.find(node.name)
+    if (!vars) {
+      if (constants.hasOwnProperty(node.name)) return { constant: constants[node.name] }
+      throw new RuntimeError(node.line, "'" + node.name + "' was never declared. Add a line like 'int " + node.name + " = 0;' first.")
+    }
+    return vars[node.name]
+  }
+  return null
+}
+
+function* lvalue(vm, scope, node) {
+  if (node.kind === "var") {
+    var cell = lookup(vm, scope, node)
+    if (cell.constant !== undefined) throw new RuntimeError(node.line, "You can't change " + node.name + ", it's a built-in constant.")
+    return { get: function () { return cell.value }, set: function (v) { cell.value = cell.type === "string" ? String(v) : coerce(cell.type, v) }, type: cell.type }
+  }
+  if (node.kind === "index") {
+    var arr = lookup(vm, scope, node.target)
+    if (!arr || !arr.array) throw new RuntimeError(node.line, "Only arrays can use [ ].")
+    var i = Math.trunc(yield* evaluate(vm, scope, node.index))
+    if (i < 0 || i >= arr.value.length) throw new RuntimeError(node.line, "Array index " + i + " is outside " + node.target.name + " (size " + arr.value.length + ").")
+    return { get: function () { return arr.value[i] }, set: function (v) { arr.value[i] = coerce(arr.type, v) }, type: arr.type }
+  }
+  throw new RuntimeError(node.line, "You can only assign to a variable.")
+}
+
+function typeOf(vm, scope, node) {
+  switch (node.kind) {
+    case "num": return node.t
+    case "str": return "string"
+    case "var":
+      var vars = scope.find(node.name)
+      if (vars) return vars[node.name].type === "float" ? "float" : vars[node.name].type === "string" ? "string" : "int"
+      return node.name === "PI" ? "float" : "int"
+    case "index": var a = lookup(vm, scope, node.target); return a && a.type === "float" ? "float" : "int"
+    case "bin": if ("==!=<<=>>=&&||".indexOf(node.op) >= 0 && node.op.length >= 1 && ["==", "!=", "<", "<=", ">", ">=", "&&", "||"].indexOf(node.op) >= 0) return "int"
+      var ta = typeOf(vm, scope, node.a), tb = typeOf(vm, scope, node.b)
+      if (ta === "string" || tb === "string") return "string"
+      return ta === "float" || tb === "float" ? "float" : "int"
+    case "un": return node.op === "!" ? "int" : typeOf(vm, scope, node.a)
+    case "cast": return node.type === "float" ? "float" : "int"
+    case "cond": var t1 = typeOf(vm, scope, node.a), t2 = typeOf(vm, scope, node.b); return t1 === "float" || t2 === "float" ? "float" : t1
+    case "call":
+      if (node.callee.kind === "var") {
+        var f = vm.program.funcs[node.callee.name]
+        if (f) return f.type === "float" ? "float" : "int"
+        if (["sqrt", "pow", "sin", "cos", "tan", "atan2", "log", "exp", "fabs", "floor", "ceil"].indexOf(node.callee.name) >= 0) return "float"
+      }
+      return "int"
+    case "assign": return typeOf(vm, scope, node.target)
+    default: return "int"
+  }
+}
+
+function* evaluate(vm, scope, node) {
+  switch (node.kind) {
+    case "num": return node.value
+    case "str": return node.value
+    case "var":
+      var c = lookup(vm, scope, node)
+      if (c.constant !== undefined) return c.constant
+      if (c.array) throw new RuntimeError(node.line, node.name + " is an array; use " + node.name + "[i].")
+      return c.value
+    case "index": var lv = yield* lvalue(vm, scope, node); return lv.get()
+    case "assign":
+      var target = yield* lvalue(vm, scope, node.target)
+      var val = yield* evaluate(vm, scope, node.value)
+      if (node.op !== "=") val = arith(node.op.substring(0, node.op.length - 1), target.get(), val, target.type !== "float" && typeOf(vm, scope, node.value) !== "float", node.line)
+      target.set(val)
+      return target.get()
+    case "incr":
+      var t = yield* lvalue(vm, scope, node.target)
+      var old = t.get()
+      t.set(old + (node.op === "++" ? 1 : -1))
+      return node.prefix ? t.get() : old
+    case "bin":
+      if (node.op === "&&") return (yield* evaluate(vm, scope, node.a)) ? ((yield* evaluate(vm, scope, node.b)) ? 1 : 0) : 0
+      if (node.op === "||") return (yield* evaluate(vm, scope, node.a)) ? 1 : ((yield* evaluate(vm, scope, node.b)) ? 1 : 0)
+      var a = yield* evaluate(vm, scope, node.a)
+      var b = yield* evaluate(vm, scope, node.b)
+      var ints = typeOf(vm, scope, node.a) !== "float" && typeOf(vm, scope, node.b) !== "float"
+      return arith(node.op, a, b, ints, node.line)
+    case "un":
+      var u = yield* evaluate(vm, scope, node.a)
+      if (node.op === "!") return u ? 0 : 1
+      if (node.op === "-") return -u
+      if (node.op === "~") return ~u
+      return +u
+    case "cast": return coerce(node.type, yield* evaluate(vm, scope, node.a))
+    case "cond": return (yield* evaluate(vm, scope, node.c)) ? yield* evaluate(vm, scope, node.a) : yield* evaluate(vm, scope, node.b)
+    case "call": return yield* call(vm, scope, node)
+    case "member": throw new RuntimeError(node.line, "'" + node.name + "' needs ( ) to be called.")
+    case "list": throw new RuntimeError(node.line, "A { } list can only set up an array.")
+    default: throw new RuntimeError(node.line || 0, "I can't run this part of the sketch.")
+  }
+}
+
+function arith(op, a, b, ints, line) {
+  if (typeof a === "string" || typeof b === "string") {
+    if (op === "+") return String(a) + String(b)
+    if (op === "==") return a == b ? 1 : 0
+    if (op === "!=") return a != b ? 1 : 0
+  }
+  switch (op) {
+    case "+": return a + b
+    case "-": return a - b
+    case "*": return a * b
+    case "/":
+      if (b === 0) { if (ints) throw new RuntimeError(line, "Division by zero."); return a / b }
+      return ints ? Math.trunc(a / b) : a / b
+    case "%": if (b === 0) throw new RuntimeError(line, "Division by zero (with %)."); return ints ? Math.trunc(a) % Math.trunc(b) : a % b
+    case "==": return a === b ? 1 : 0
+    case "!=": return a !== b ? 1 : 0
+    case "<": return a < b ? 1 : 0
+    case "<=": return a <= b ? 1 : 0
+    case ">": return a > b ? 1 : 0
+    case ">=": return a >= b ? 1 : 0
+    case "&": return a & b
+    case "|": return a | b
+    case "^": return a ^ b
+    case "<<": return a << b
+    case ">>": return a >> b
+  }
+  throw new RuntimeError(line, "Unknown operator " + op)
+}
+
+function checkPin(pin, line) {
+  pin = Math.trunc(pin)
+  if (!(pin >= 0 && pin < PIN_COUNT)) throw new RuntimeError(line, "Pin " + pin + " doesn't exist. OmaDuino has pins 0–13 and A0–A5.")
+  return pin
+}
+
+function* args(vm, scope, node) {
+  var out = []
+  for (var i = 0; i < node.args.length; i++) out.push(yield* evaluate(vm, scope, node.args[i]))
+  return out
+}
+
+function need(name, a, n, line) {
+  if (a.length < n) throw new RuntimeError(line, name + "() needs " + n + " value" + (n === 1 ? "" : "s") + ".")
+}
+
+function volts(vm, pin) { return vm.io && vm.io.volts ? Number(vm.io.volts(pin)) || 0 : 0 }
+
+function* call(vm, scope, node) {
+  var callee = node.callee, line = node.line
+  // obj.method(...)
+  if (callee.kind === "member") {
+    var obj = callee.target
+    var a = yield* args(vm, scope, node)
+    if (obj.kind === "object" && obj.name === "Serial") {
+      if (callee.name === "begin" || callee.name === "flush") return 0
+      if (callee.name === "print" || callee.name === "println" || callee.name === "write") {
+        var text = a.length ? formatValue(a[0], a[1], node.args[0], vm, scope) : ""
+        serialWrite(vm, text + (callee.name === "println" ? "\n" : ""))
+        return text.length
+      }
+      if (callee.name === "available") return 0
+      if (callee.name === "read") return -1
+      throw new RuntimeError(line, "Serial." + callee.name + "() isn't supported here.")
+    }
+    var cell = obj.kind === "index" ? yield* lvalue(vm, scope, obj) : lookup(vm, scope, obj)
+    var servo = obj.kind === "index" ? cell.get() : cell && cell.value
+    if (servo && servo.servo) {
+      if (callee.name === "attach") {
+        need("attach", a, 1, line)
+        servo.pin = checkPin(a[0], line)
+        vm.pins[servo.pin].mode = "out"
+        vm.pins[servo.pin].servo = servo.angle
+        return 1
+      }
+      if (callee.name === "write") {
+        need("write", a, 1, line)
+        servo.angle = Math.max(0, Math.min(180, Math.trunc(a[0])))
+        if (servo.pin >= 0) vm.pins[servo.pin].servo = servo.angle
+        return 0
+      }
+      if (callee.name === "writeMicroseconds") {
+        servo.angle = Math.max(0, Math.min(180, Math.round((a[0] - 544) / (2400 - 544) * 180)))
+        if (servo.pin >= 0) vm.pins[servo.pin].servo = servo.angle
+        return 0
+      }
+      if (callee.name === "read") return servo.angle
+      if (callee.name === "attached") return servo.pin >= 0 ? 1 : 0
+      if (callee.name === "detach") { if (servo.pin >= 0) vm.pins[servo.pin].servo = null; servo.pin = -1; return 0 }
+    }
+    if (cell && cell.type === "string" && callee.name === "length") return String(cell.value).length
+    throw new RuntimeError(line, "I don't know ." + callee.name + "() here.")
+  }
+  if (callee.kind !== "var") throw new RuntimeError(line, "Only functions can be called.")
+  var name = callee.name
+  if (vm.program.funcs[name]) {
+    var fa = yield* args(vm, scope, node)
+    return yield* callFunction(vm, name, fa, line)
+  }
+  var v = yield* args(vm, scope, node)
+  var p
+  switch (name) {
+    case "pinMode":
+      need(name, v, 2, line); p = checkPin(v[0], line)
+      vm.pins[p].mode = v[1] === 1 ? "out" : v[1] === 2 ? "pullup" : "in"
+      if (vm.pins[p].mode !== "out") { vm.pins[p].pwm = null; vm.pins[p].level = 0 }
+      return 0
+    case "digitalWrite":
+      need(name, v, 2, line); p = checkPin(v[0], line)
+      vm.pins[p].pwm = null
+      vm.pins[p].tone = null
+      if (vm.pins[p].mode === "out") vm.pins[p].level = v[1] ? 1 : 0
+      else vm.pins[p].mode = v[1] ? "pullup" : "in"   // like the real chip: HIGH on an input turns on the pull-up
+      return 0
+    case "digitalRead":
+      need(name, v, 1, line); p = checkPin(v[0], line)
+      if (vm.pins[p].mode === "out") return vm.pins[p].level
+      return volts(vm, p) > 2.5 ? 1 : 0
+    case "analogRead":
+      need(name, v, 1, line); p = checkPin(v[0] < 6 ? v[0] + 14 : v[0], line)
+      if (p < 14) throw new RuntimeError(line, "analogRead() works on A0–A5.")
+      yield { ops: 100 }    // a real conversion takes about 100 µs
+      return Math.max(0, Math.min(1023, Math.round(volts(vm, p) / 5 * 1023)))
+    case "analogWrite":
+      need(name, v, 2, line); p = checkPin(v[0], line)
+      vm.pins[p].mode = "out"
+      var duty = Math.max(0, Math.min(255, Math.trunc(v[1])))
+      if (!PWM_PINS[p]) { vm.pins[p].pwm = null; vm.pins[p].level = duty >= 128 ? 1 : 0; return 0 }
+      vm.pins[p].pwm = duty
+      vm.pins[p].level = duty > 0 ? 1 : 0
+      return 0
+    case "tone":
+      need(name, v, 2, line); p = checkPin(v[0], line)
+      vm.pins[p].mode = "out"; vm.pins[p].tone = Math.max(31, Math.trunc(v[1])); vm.pins[p].pwm = 127
+      return 0
+    case "noTone":
+      need(name, v, 1, line); p = checkPin(v[0], line)
+      vm.pins[p].tone = null; vm.pins[p].pwm = null; vm.pins[p].level = 0
+      return 0
+    case "delay": need(name, v, 1, line); yield { delay: Math.max(0, v[0]) * 1000 }; return 0
+    case "delayMicroseconds": need(name, v, 1, line); yield { delay: Math.max(0, v[0]) }; return 0
+    case "millis": return Math.floor(vm.time / 1000)
+    case "micros": return Math.floor(vm.time)
+    case "pulseIn":
+      need(name, v, 2, line); p = checkPin(v[0], line)
+      var us = vm.io && vm.io.pulseIn ? Number(vm.io.pulseIn(p, v[1], v.length > 2 ? v[2] : 1000000)) || 0 : 0
+      yield { delay: us > 0 ? us : (v.length > 2 ? v[2] : 1000000) }
+      return Math.trunc(us)
+    case "map":
+      need(name, v, 5, line)
+      if (v[2] === v[1]) return v[3]
+      return Math.trunc((v[0] - v[1]) * (v[4] - v[3]) / (v[2] - v[1]) + v[3])
+    case "constrain": need(name, v, 3, line); return Math.min(Math.max(v[0], v[1]), v[2])
+    case "min": need(name, v, 2, line); return Math.min(v[0], v[1])
+    case "max": need(name, v, 2, line); return Math.max(v[0], v[1])
+    case "abs": case "fabs": need(name, v, 1, line); return Math.abs(v[0])
+    case "sqrt": return Math.sqrt(v[0])
+    case "pow": return Math.pow(v[0], v[1])
+    case "sin": return Math.sin(v[0])
+    case "cos": return Math.cos(v[0])
+    case "tan": return Math.tan(v[0])
+    case "atan2": return Math.atan2(v[0], v[1])
+    case "floor": return Math.floor(v[0])
+    case "ceil": return Math.ceil(v[0])
+    case "round": return Math.round(v[0])
+    case "log": return Math.log(v[0])
+    case "exp": return Math.exp(v[0])
+    case "random":
+      vm.randState = (vm.randState * 1103515245 + 12345) & 0x7fffffff
+      var r = vm.randState / 0x7fffffff
+      if (v.length >= 2) return Math.floor(v[0] + r * (v[1] - v[0]))
+      return Math.floor(r * (v.length ? v[0] : 2147483647))
+    case "randomSeed": vm.randState = Math.trunc(v[0]) & 0x7fffffff || 1; return 0
+    case "bitRead": return (v[0] >> v[1]) & 1
+    case "String": return v.length ? String(v[0]) : ""
+  }
+  throw new RuntimeError(line, "There is no function called '" + name + "'. Check the spelling (capital letters matter).")
+}
+
+function formatValue(v, base, node, vm, scope) {
+  if (typeof v === "string") return v
+  if (base === 16 && Number.isInteger(v)) return v.toString(16).toUpperCase()
+  if (base === 2 && Number.isInteger(v)) return v.toString(2)
+  var t = node ? typeOf(vm, scope, node) : (Number.isInteger(v) ? "int" : "float")
+  if (t === "float") return Number(v).toFixed(typeof base === "number" && base >= 0 && base < 8 ? base : 2)
+  return String(Math.trunc(v))
+}
+
+// ------------------------------------------------------------------ examples
+
+var examples = [
+  { id: "blink", title: "Blink", text:
+"// Blink: turn an LED on and off every half second.\n" +
+"// Wire pin 13 → 220 Ω resistor → LED (+ leg), LED (− leg) → GND.\n" +
+"\n" +
+"int led = 13;\n" +
+"\n" +
+"void setup() {\n" +
+"  pinMode(led, OUTPUT);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  digitalWrite(led, HIGH);\n" +
+"  delay(500);\n" +
+"  digitalWrite(led, LOW);\n" +
+"  delay(500);\n" +
+"}\n" },
+  { id: "button", title: "Button → LED", text:
+"// Light the LED while the button is held.\n" +
+"// Button between pin 2 and GND (the pull-up keeps it HIGH until pressed).\n" +
+"// LED on pin 13 through 220 Ω.\n" +
+"\n" +
+"const int buttonPin = 2;\n" +
+"const int ledPin = 13;\n" +
+"\n" +
+"void setup() {\n" +
+"  pinMode(buttonPin, INPUT_PULLUP);\n" +
+"  pinMode(ledPin, OUTPUT);\n" +
+"  Serial.begin(9600);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  if (digitalRead(buttonPin) == LOW) {\n" +
+"    digitalWrite(ledPin, HIGH);\n" +
+"  } else {\n" +
+"    digitalWrite(ledPin, LOW);\n" +
+"  }\n" +
+"}\n" },
+  { id: "fade", title: "Fade (PWM)", text:
+"// Fade an LED up and down with PWM on pin 9.\n" +
+"// Pin 9 → 220 Ω → LED → GND.\n" +
+"\n" +
+"int brightness = 0;\n" +
+"int step = 5;\n" +
+"\n" +
+"void setup() {\n" +
+"  pinMode(9, OUTPUT);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  analogWrite(9, brightness);\n" +
+"  brightness = brightness + step;\n" +
+"  if (brightness <= 0 || brightness >= 255) {\n" +
+"    step = -step;\n" +
+"  }\n" +
+"  delay(20);\n" +
+"}\n" },
+  { id: "knob", title: "Read a knob", text:
+"// Read a potentiometer on A0 and print it.\n" +
+"// Pot ends to 5V and GND, middle leg to A0. Open the Serial Monitor.\n" +
+"\n" +
+"void setup() {\n" +
+"  Serial.begin(9600);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  int value = analogRead(A0);          // 0 to 1023\n" +
+"  float volts = value * 5.0 / 1023.0;\n" +
+"  Serial.print(\"A0 = \");\n" +
+"  Serial.print(value);\n" +
+"  Serial.print(\"  (\");\n" +
+"  Serial.print(volts);\n" +
+"  Serial.println(\" V)\");\n" +
+"  delay(250);\n" +
+"}\n" },
+  { id: "nightlight", title: "Night light", text:
+"// Turn on an LED when it gets dark.\n" +
+"// LDR from 5V to A0, 10 kΩ from A0 to GND. LED on pin 13 through 220 Ω.\n" +
+"\n" +
+"const int threshold = 400;\n" +
+"\n" +
+"void setup() {\n" +
+"  pinMode(13, OUTPUT);\n" +
+"  Serial.begin(9600);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  int light = analogRead(A0);\n" +
+"  Serial.println(light);\n" +
+"  digitalWrite(13, light < threshold ? HIGH : LOW);\n" +
+"  delay(100);\n" +
+"}\n" },
+  { id: "servo", title: "Servo sweep", text:
+"// Sweep a servo from 0° to 180° and back.\n" +
+"// Servo: brown → GND, red → 5V, orange (signal) → pin 9.\n" +
+"#include <Servo.h>\n" +
+"\n" +
+"Servo arm;\n" +
+"\n" +
+"void setup() {\n" +
+"  arm.attach(9);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  for (int angle = 0; angle <= 180; angle += 2) {\n" +
+"    arm.write(angle);\n" +
+"    delay(15);\n" +
+"  }\n" +
+"  for (int angle = 180; angle >= 0; angle -= 2) {\n" +
+"    arm.write(angle);\n" +
+"    delay(15);\n" +
+"  }\n" +
+"}\n" },
+  { id: "thermo", title: "Thermometer", text:
+"// Read a TMP36 on A1 and print the temperature.\n" +
+"// TMP36: +V → 5V, out → A1, GND → GND.\n" +
+"\n" +
+"void setup() {\n" +
+"  Serial.begin(9600);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  float volts = analogRead(A1) * 5.0 / 1023.0;\n" +
+"  float celsius = (volts - 0.5) * 100.0;\n" +
+"  Serial.print(celsius);\n" +
+"  Serial.println(\" C\");\n" +
+"  delay(500);\n" +
+"}\n" },
+  { id: "traffic", title: "Traffic light", text:
+"// Red, yellow, green LEDs on pins 4, 3, 2 (each through 220 Ω to GND).\n" +
+"\n" +
+"int red = 4, yellow = 3, green = 2;\n" +
+"\n" +
+"void light(int pin, int ms) {\n" +
+"  digitalWrite(pin, HIGH);\n" +
+"  delay(ms);\n" +
+"  digitalWrite(pin, LOW);\n" +
+"}\n" +
+"\n" +
+"void setup() {\n" +
+"  pinMode(red, OUTPUT);\n" +
+"  pinMode(yellow, OUTPUT);\n" +
+"  pinMode(green, OUTPUT);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  light(green, 2000);\n" +
+"  light(yellow, 700);\n" +
+"  light(red, 2000);\n" +
+"}\n" },
+  { id: "distance", title: "Distance sensor", text:
+"// HC-SR04 ultrasonic sensor: VCC → 5V, GND → GND, TRIG → pin 7, ECHO → pin 8.\n" +
+"// Turns on the LED on pin 13 when something is closer than 20 cm.\n" +
+"\n" +
+"const int trig = 7, echo = 8;\n" +
+"\n" +
+"void setup() {\n" +
+"  pinMode(trig, OUTPUT);\n" +
+"  pinMode(echo, INPUT);\n" +
+"  pinMode(13, OUTPUT);\n" +
+"  Serial.begin(9600);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  digitalWrite(trig, LOW);\n" +
+"  delayMicroseconds(2);\n" +
+"  digitalWrite(trig, HIGH);\n" +
+"  delayMicroseconds(10);\n" +
+"  digitalWrite(trig, LOW);\n" +
+"  long duration = pulseIn(echo, HIGH);\n" +
+"  int cm = duration / 58;\n" +
+"  Serial.print(cm);\n" +
+"  Serial.println(\" cm\");\n" +
+"  digitalWrite(13, cm < 20 ? HIGH : LOW);\n" +
+"  delay(100);\n" +
+"}\n" },
+  { id: "motor", title: "Motor speed", text:
+"// Drive a DC motor through an NPN transistor (or a motor driver) on pin 6.\n" +
+"// The knob on A0 sets the speed.\n" +
+"\n" +
+"void setup() {\n" +
+"  pinMode(6, OUTPUT);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  int speed = map(analogRead(A0), 0, 1023, 0, 255);\n" +
+"  analogWrite(6, speed);\n" +
+"  delay(20);\n" +
+"}\n" },
+  { id: "robot", title: "Wall-dodging robot", text:
+"// A robot car that drives forward and turns away from walls.\n" +
+"// Motor driver: IN1 → 5, IN2 → 6 (left wheel), IN3 → 9, IN4 → 10 (right wheel).\n" +
+"// Robot sonar: TRIG → 7, ECHO → 8. Open the Robot arena to watch it drive.\n" +
+"\n" +
+"const int trig = 7, echo = 8;\n" +
+"\n" +
+"void drive(int left, int right) {\n" +
+"  // Positive = forward, negative = backward, 0–255 = speed.\n" +
+"  analogWrite(5, left > 0 ? left : 0);\n" +
+"  analogWrite(6, left < 0 ? -left : 0);\n" +
+"  analogWrite(9, right > 0 ? right : 0);\n" +
+"  analogWrite(10, right < 0 ? -right : 0);\n" +
+"}\n" +
+"\n" +
+"int distanceCm() {\n" +
+"  digitalWrite(trig, LOW);\n" +
+"  delayMicroseconds(2);\n" +
+"  digitalWrite(trig, HIGH);\n" +
+"  delayMicroseconds(10);\n" +
+"  digitalWrite(trig, LOW);\n" +
+"  long duration = pulseIn(echo, HIGH, 30000);\n" +
+"  if (duration == 0) return 400;   // nothing in range\n" +
+"  return duration / 58;\n" +
+"}\n" +
+"\n" +
+"void setup() {\n" +
+"  pinMode(trig, OUTPUT);\n" +
+"  pinMode(echo, INPUT);\n" +
+"  Serial.begin(9600);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  int cm = distanceCm();\n" +
+"  Serial.println(cm);\n" +
+"  if (cm < 25) {\n" +
+"    drive(-150, -150);   // back up\n" +
+"    delay(300);\n" +
+"    drive(180, -180);    // spin right\n" +
+"    delay(350);\n" +
+"  } else {\n" +
+"    drive(200, 200);     // full ahead\n" +
+"  }\n" +
+"  delay(40);\n" +
+"}\n" }
+]
+
+function example(id) {
+  for (var i = 0; i < examples.length; i++) if (examples[i].id === id) return examples[i].text
+  return examples[0].text
+}

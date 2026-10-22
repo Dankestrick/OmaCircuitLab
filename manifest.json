@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.dankestrick.omacircuitlab",
+  "name": "OmaCircuitLab",
+  "version": "0.1.0",
+  "author": "Dankestrick",
+  "license": "MIT",
+  "description": "A breadboard circuit simulator for learning electronics. Drop in batteries, resistors, LEDs, buttons, sensors, transistors and motors, wire them with neat square jumpers, press Run and watch it work. Hover anything for an explanation, and follow the Learner's Guide from a first LED to driving a motor.",
+  "kinds": [
+    "overlay"
+  ],
+  "entryPoints": {
+    "overlay": "qml/Overlay.qml"
+  }
+}

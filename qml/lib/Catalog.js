@@ -1,0 +1,404 @@
+.pragma library
+
+// The parts you can put on the bench. Each part has pins at grid offsets from
+// its origin pin (one grid step = one breadboard hole, 0.1 inch). Rotation
+// turns those offsets in 90 degree steps. `props` are the editable values the
+// Inspector shows; `tip` is the hover text for learners.
+
+var categories = [
+  { id: "power", label: "Power" },
+  { id: "basics", label: "Basics" },
+  { id: "inputs", label: "Inputs & switches" },
+  { id: "sensors", label: "Sensors" },
+  { id: "semis", label: "Diodes & transistors" },
+  { id: "outputs", label: "Outputs & motion" },
+  { id: "mcu", label: "Microcontroller & robotics" },
+  { id: "meters", label: "Meters" }
+]
+
+var ledColors = {
+  red:    { label: "Red",    vf: 1.8, glow: "#ff2a2a", body: "#c62828" },
+  orange: { label: "Orange", vf: 1.9, glow: "#ff8c1a", body: "#e06a00" },
+  yellow: { label: "Yellow", vf: 2.0, glow: "#ffe234", body: "#d4b000" },
+  green:  { label: "Green",  vf: 2.1, glow: "#3dff5a", body: "#1f9a32" },
+  blue:   { label: "Blue",   vf: 3.0, glow: "#3a8bff", body: "#1f55c8" },
+  white:  { label: "White",  vf: 3.0, glow: "#ffffff", body: "#d8dde3" }
+}
+
+var wireColors = [
+  { id: "red", hex: "#e53935", hint: "Red usually means + (positive)" },
+  { id: "black", hex: "#1b1b1b", hint: "Black usually means − (ground)" },
+  { id: "blue", hex: "#1e6fe0", hint: "Blue: often ground or a signal" },
+  { id: "green", hex: "#2e9d3a", hint: "Green: a signal wire" },
+  { id: "yellow", hex: "#f2c200", hint: "Yellow: a signal wire" },
+  { id: "orange", hex: "#f07a12", hint: "Orange: a signal wire" },
+  { id: "white", hex: "#f4f4f4", hint: "White: a signal wire" },
+  { id: "purple", hex: "#8e44c9", hint: "Purple: a signal wire" }
+]
+
+function wireHex(id) {
+  for (var i = 0; i < wireColors.length; i++) if (wireColors[i].id === id) return wireColors[i].hex
+  return "#1e6fe0"
+}
+
+// Standard E12 resistor values across the decades a hobby kit carries.
+var e12 = [1.0, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2]
+var resistorValues = (function () {
+  var out = []
+  for (var d = 1; d <= 1e6; d *= 10)
+    for (var i = 0; i < e12.length; i++) out.push(Math.round(e12[i] * d * 100) / 100)
+  out.push(1e7)
+  return out
+})()
+
+var parts = {
+  battery9v: {
+    name: "9 V battery", category: "power", w: 3, h: 4,
+    pins: [{ name: "+", x: 0, y: 0 }, { name: "−", x: 2, y: 0 }],
+    props: { volts: 9 },
+    editable: [],
+    tip: "A 9 V battery. Current flows out of + through your circuit and back into −. Real 9 V batteries can only give a little current, so they are great for LEDs and small sensors."
+  },
+  aaPack: {
+    name: "Battery pack (AA)", category: "power", w: 3, h: 4,
+    pins: [{ name: "+", x: 0, y: 0 }, { name: "−", x: 2, y: 0 }],
+    props: { cells: 2, volts: 3 },
+    editable: [{ key: "cells", label: "AA cells", kind: "choice", options: [2, 3, 4], unit: "" }],
+    tip: "AA cells in series. Each cell gives about 1.5 V, so 2 cells = 3 V, 3 cells = 4.5 V, 4 cells = 6 V."
+  },
+  benchSupply: {
+    name: "Bench power supply", category: "power", w: 5, h: 4,
+    pins: [{ name: "+", x: 1, y: 0 }, { name: "−", x: 3, y: 0 }],
+    props: { volts: 5, currentLimit: 1 },
+    editable: [
+      { key: "volts", label: "Voltage", kind: "range", min: 0, max: 15, step: 0.1, unit: "V" },
+      { key: "currentLimit", label: "Current limit", kind: "range", min: 0.01, max: 3, step: 0.01, unit: "A" }
+    ],
+    tip: "An adjustable supply. Set the voltage, and the current limit protects your parts: if the circuit tries to pull more, the supply lowers its voltage instead."
+  },
+  resistor: {
+    name: "Resistor", category: "basics", w: 4, h: 1,
+    pins: [{ name: "1", x: 0, y: 0 }, { name: "2", x: 4, y: 0 }],
+    props: { ohms: 220, span: 4 },
+    editable: [
+      { key: "ohms", label: "Resistance", kind: "values", values: resistorValues, unit: "Ω" },
+      { key: "span", label: "Leg spacing", kind: "choice", options: [2, 3, 4, 5, 6, 8], unit: "holes" }
+    ],
+    tip: "A resistor limits current. Ohm's law: current = voltage ÷ resistance. The colored bands spell its value. It has no direction, so either leg can go first."
+  },
+  led: {
+    name: "LED", category: "basics", w: 1, h: 1,
+    pins: [{ name: "anode (+)", x: 0, y: 0 }, { name: "cathode (−)", x: 1, y: 0 }],
+    props: { color: "red" },
+    editable: [{ key: "color", label: "Color", kind: "choice", options: ["red", "orange", "yellow", "green", "blue", "white"], unit: "" }],
+    tip: "A light-emitting diode. Current only flows one way: into the long leg (anode, +) and out the short leg (cathode, −, the flat side). Always use a resistor with it, or it burns out. About 10–20 mA is bright."
+  },
+  rgbLed: {
+    name: "RGB LED (common cathode)", category: "basics", w: 3, h: 1,
+    pins: [{ name: "red", x: 0, y: 0 }, { name: "cathode (−)", x: 1, y: 0 }, { name: "green", x: 2, y: 0 }, { name: "blue", x: 3, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "Three LEDs in one: red, green and blue sharing one cathode (−). Give each color its own resistor and mix them to make any color."
+  },
+  capacitor: {
+    name: "Ceramic capacitor", category: "basics", w: 1, h: 1,
+    pins: [{ name: "1", x: 0, y: 0 }, { name: "2", x: 1, y: 0 }],
+    props: { farads: 1e-7 },
+    editable: [{ key: "farads", label: "Capacitance", kind: "values", values: [1e-9, 1e-8, 1e-7, 1e-6], unit: "F" }],
+    tip: "A small capacitor stores a little charge. It blocks steady DC once charged and passes quick changes. No polarity."
+  },
+  electrolytic: {
+    name: "Electrolytic capacitor", category: "basics", w: 1, h: 1,
+    pins: [{ name: "+", x: 0, y: 0 }, { name: "−", x: 1, y: 0 }],
+    props: { farads: 1e-4, ratedVolts: 16 },
+    editable: [{ key: "farads", label: "Capacitance", kind: "values", values: [1e-6, 1e-5, 1e-4, 4.7e-4, 1e-3], unit: "F" }],
+    tip: "A big capacitor that can smooth power or make slow fades. It has a + and − leg (the stripe marks −). Putting it in backwards, or above its rated voltage, damages it."
+  },
+  pushButton: {
+    name: "Push button", category: "inputs", w: 3, h: 2,
+    pins: [{ name: "1", x: 0, y: 0 }, { name: "2", x: 3, y: 0 }],
+    props: { pressed: false },
+    editable: [],
+    interactive: "momentary",
+    tip: "Connects its two legs only while you hold it down. Click and hold it while the circuit runs. Turn it (R) so it straddles the center channel, like a real button."
+  },
+  slideSwitch: {
+    name: "Slide switch", category: "inputs", w: 2, h: 1,
+    pins: [{ name: "A", x: 0, y: 0 }, { name: "common", x: 1, y: 0 }, { name: "B", x: 2, y: 0 }],
+    props: { position: 0 },
+    editable: [],
+    interactive: "toggle",
+    tip: "The middle leg connects to the left leg or the right leg, depending on where the slider is. Click to flip it."
+  },
+  potentiometer: {
+    name: "Potentiometer (knob)", category: "inputs", w: 2, h: 2,
+    pins: [{ name: "end 1", x: 0, y: 0 }, { name: "wiper", x: 1, y: 0 }, { name: "end 2", x: 2, y: 0 }],
+    props: { ohms: 10000, turn: 0.5 },
+    editable: [
+      { key: "ohms", label: "Total resistance", kind: "values", values: [1000, 10000, 100000], unit: "Ω" },
+      { key: "turn", label: "Knob", kind: "range", min: 0, max: 1, step: 0.01, unit: "" }
+    ],
+    interactive: "knob",
+    tip: "A resistor with a sliding middle contact (the wiper). Put the ends across power and the wiper gives any voltage in between. Scroll on it to turn the knob."
+  },
+  ldr: {
+    name: "Light sensor (LDR)", category: "sensors", w: 1, h: 1,
+    pins: [{ name: "1", x: 0, y: 0 }, { name: "2", x: 1, y: 0 }],
+    props: { light: 0.5 },
+    editable: [{ key: "light", label: "Light level", kind: "range", min: 0, max: 1, step: 0.01, unit: "" }],
+    tip: "A photoresistor: bright light makes its resistance low (about 1 kΩ), darkness makes it high (about 1 MΩ). Pair it with a resistor to make a light-sensing voltage divider."
+  },
+  thermistor: {
+    name: "Thermistor (NTC 10k)", category: "sensors", w: 1, h: 1,
+    pins: [{ name: "1", x: 0, y: 0 }, { name: "2", x: 1, y: 0 }],
+    props: { celsius: 25 },
+    editable: [{ key: "celsius", label: "Temperature", kind: "range", min: -20, max: 120, step: 1, unit: "°C" }],
+    tip: "Its resistance drops as it gets warmer: 10 kΩ at 25 °C. Use it in a voltage divider to sense temperature."
+  },
+  tmp36: {
+    name: "Temperature probe (TMP36)", category: "sensors", w: 2, h: 1,
+    pins: [{ name: "+V", x: 0, y: 0 }, { name: "out", x: 1, y: 0 }, { name: "GND", x: 2, y: 0 }],
+    props: { celsius: 25 },
+    editable: [{ key: "celsius", label: "Temperature", kind: "range", min: -40, max: 125, step: 1, unit: "°C" }],
+    tip: "An analog temperature chip. Power it with 2.7–5.5 V and its middle leg outputs 0.5 V + 10 mV per °C (25 °C → 0.75 V). The flat face points at you: +V left, GND right."
+  },
+  diode: {
+    name: "Diode (1N4007)", category: "semis", w: 3, h: 1,
+    pins: [{ name: "anode", x: 0, y: 0 }, { name: "cathode", x: 3, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "A one-way valve for current: it flows from anode to cathode (the striped end) and drops about 0.7 V. Used to protect circuits from backwards power and from motor kickback."
+  },
+  zener: {
+    name: "Zener diode (5.1 V)", category: "semis", w: 3, h: 1,
+    pins: [{ name: "anode", x: 0, y: 0 }, { name: "cathode", x: 3, y: 0 }],
+    props: { zenerVolts: 5.1 },
+    editable: [{ key: "zenerVolts", label: "Zener voltage", kind: "choice", options: [3.3, 5.1, 9.1, 12], unit: "V" }],
+    tip: "Works like a diode forwards, but backwards it holds a fixed voltage. With a resistor it makes a simple voltage reference."
+  },
+  npn: {
+    name: "NPN transistor (2N2222)", category: "semis", w: 2, h: 1,
+    pins: [{ name: "emitter", x: 0, y: 0 }, { name: "base", x: 1, y: 0 }, { name: "collector", x: 2, y: 0 }],
+    props: { beta: 150 },
+    editable: [],
+    tip: "A small current into the base lets a much bigger current flow from collector to emitter. Great for switching LEDs, buzzers and motors from a weak signal. Always put a resistor (about 1 kΩ) on the base."
+  },
+  pnp: {
+    name: "PNP transistor (2N2907)", category: "semis", w: 2, h: 1,
+    pins: [{ name: "emitter", x: 0, y: 0 }, { name: "base", x: 1, y: 0 }, { name: "collector", x: 2, y: 0 }],
+    props: { beta: 150 },
+    editable: [],
+    tip: "The mirror image of an NPN: pulling the base lower than the emitter lets current flow from emitter to collector. Used to switch the + side of a load."
+  },
+  nmos: {
+    name: "N-MOSFET (2N7000)", category: "semis", w: 2, h: 1,
+    pins: [{ name: "source", x: 0, y: 0 }, { name: "gate", x: 1, y: 0 }, { name: "drain", x: 2, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "A voltage-controlled switch: raise the gate about 2 V above the source and current flows drain → source. The gate draws almost no current."
+  },
+  buzzer: {
+    name: "Buzzer", category: "outputs", w: 2, h: 2,
+    pins: [{ name: "+", x: 0, y: 0 }, { name: "−", x: 2, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "An active buzzer beeps on its own when it gets 3–12 V across its legs, + to the longer leg."
+  },
+  motor: {
+    name: "DC motor", category: "outputs", w: 3, h: 3,
+    pins: [{ name: "1", x: 0, y: 0 }, { name: "2", x: 3, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "Spins when current flows; swap the wires to spin the other way. Motors pull a lot of current, so drive them with a transistor or a motor driver, never straight from a chip pin. Add a diode across it to catch the kickback."
+  },
+  omaduino: {
+    name: "OmaDuino board", category: "mcu", w: 24, h: 10,
+    pins: [{ name: "GND", x: 0, y: 0 }, { name: "5V", x: 1, y: 0 }, { name: "3.3V", x: 2, y: 0 }, { name: "A0", x: 3, y: 0 }, { name: "A1", x: 4, y: 0 }, { name: "A2", x: 5, y: 0 }, { name: "A3", x: 6, y: 0 }, { name: "A4", x: 7, y: 0 }, { name: "A5", x: 8, y: 0 }, { name: "D2", x: 10, y: 0 }, { name: "D3", x: 11, y: 0 }, { name: "D4", x: 12, y: 0 }, { name: "D5", x: 13, y: 0 }, { name: "D6", x: 14, y: 0 }, { name: "D7", x: 15, y: 0 }, { name: "D8", x: 16, y: 0 }, { name: "D9", x: 17, y: 0 }, { name: "D10", x: 18, y: 0 }, { name: "D11", x: 19, y: 0 }, { name: "D12", x: 20, y: 0 }, { name: "D13", x: 21, y: 0 }, { name: "GND", x: 23, y: 0 }],
+    props: { code: "", sketch: "blink" },
+    editable: [],
+    tip: "A microcontroller board like an Arduino Uno: a tiny computer you program. Its pins can switch things on (OUTPUT), read buttons and sensors (INPUT), dim LEDs with PWM (~ pins 3, 5, 6, 9, 10, 11) and read voltages from 0 to 5 V on A0–A5. It runs on its own USB power (you never wire power into it), and its 5V and GND pins can feed your breadboard. Select it to write and upload code."
+  },
+  servo: {
+    name: "Hobby servo", category: "mcu", w: 4, h: 3,
+    pins: [{ name: "GND (brown)", x: 0, y: 0 }, { name: "+5V (red)", x: 1, y: 0 }, { name: "signal (orange)", x: 2, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "A motor that turns to an exact angle from 0° to 180°, used for robot arms, steering and grippers. Power it from 5V and GND, and connect the signal wire to a microcontroller pin. In code: Servo s; s.attach(9); s.write(90);"
+  },
+  hcsr04: {
+    name: "Ultrasonic distance sensor (HC-SR04)", category: "mcu", w: 3, h: 3,
+    pins: [{ name: "VCC", x: 0, y: 0 }, { name: "TRIG", x: 1, y: 0 }, { name: "ECHO", x: 2, y: 0 }, { name: "GND", x: 3, y: 0 }],
+    props: { distance: 30 },
+    editable: [{ key: "distance", label: "Object distance", kind: "range", min: 2, max: 300, step: 1, unit: "cm" }],
+    tip: "Measures distance with sound, like a bat. A short pulse on TRIG makes it chirp; ECHO then stays HIGH for as long as the echo took to come back (58 µs per cm). Robots use it to avoid walls. Scroll on it to move the object."
+  },
+  sevenSeg: {
+    name: "7-segment display", category: "outputs", w: 8, h: 3,
+    pins: [{ name: "a", x: 0, y: 0 }, { name: "b", x: 1, y: 0 }, { name: "c", x: 2, y: 0 }, { name: "d", x: 3, y: 0 }, { name: "e", x: 4, y: 0 }, { name: "f", x: 5, y: 0 }, { name: "g", x: 6, y: 0 }, { name: "dp", x: 7, y: 0 }, { name: "common (−)", x: 8, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "Seven LED bars (a–g) plus a dot that draw the digits 0–9. Each segment is an LED with a shared − leg (common cathode), so each needs its own resistor. Light a, b, c to draw a 7."
+  },
+  motorDriver: {
+    name: "Motor driver (H-bridge)", category: "mcu", w: 9, h: 3,
+    pins: [{ name: "VM (motor +)", x: 0, y: 0 }, { name: "GND", x: 1, y: 0 }, { name: "IN1", x: 2, y: 0 }, { name: "IN2", x: 3, y: 0 }, { name: "IN3", x: 4, y: 0 }, { name: "IN4", x: 5, y: 0 }, { name: "OUT1", x: 6, y: 0 }, { name: "OUT2", x: 7, y: 0 }, { name: "OUT3", x: 8, y: 0 }, { name: "OUT4", x: 9, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "Lets a microcontroller run two motors forwards and backwards. Each input pin flips one output between VM (motor power) and GND: IN1/IN2 drive motor A on OUT1/OUT2, IN3/IN4 drive motor B on OUT3/OUT4. IN1 HIGH + IN2 LOW spins one way; swap them to reverse. PWM on an input sets the speed."
+  },
+  robotCar: {
+    name: "Robot car", category: "mcu", w: 9, h: 8,
+    pins: [{ name: "left motor +", x: 0, y: 0 }, { name: "left motor −", x: 1, y: 0 }, { name: "right motor +", x: 2, y: 0 }, { name: "right motor −", x: 3, y: 0 }, { name: "sonar VCC", x: 5, y: 0 }, { name: "sonar TRIG", x: 6, y: 0 }, { name: "sonar ECHO", x: 7, y: 0 }, { name: "sonar GND", x: 8, y: 0 }],
+    props: { distance: 100 },
+    editable: [{ key: "distance", label: "Sonar distance (when the arena is closed)", kind: "range", min: 2, max: 400, step: 1, unit: "cm" }],
+    tip: "A two-wheeled robot with a distance sensor on the front. Each wheel has its own motor: both forward drives straight, one forward and one back spins in place. It drives around the Robot arena (open it from the Inspector), and its sensor sees the arena's walls."
+  },
+  multimeter: {
+    name: "Multimeter", category: "meters", w: 6, h: 5,
+    pins: [{ name: "red probe (V/Ω/A)", x: 1, y: 0 }, { name: "black probe (COM)", x: 4, y: 0 }],
+    props: { mode: "V" },
+    editable: [{ key: "mode", label: "Mode", kind: "choice", options: ["V", "A", "Ω"], unit: "" }],
+    tip: "Measures volts (V) across a part, current (A) when placed in line with the circuit, or resistance (Ω) of an unpowered part. Wire the red and black probe holes to the places you want to measure."
+  }
+}
+
+// The dropdown list, grouped by category in catalog order.
+function grouped() {
+  var out = []
+  for (var c = 0; c < categories.length; c++) {
+    var items = []
+    for (var id in parts) if (parts[id].category === categories[c].id) items.push({ id: id, name: parts[id].name })
+    out.push({ id: categories[c].id, label: categories[c].label, items: items })
+  }
+  return out
+}
+
+function defaults(type) {
+  var p = parts[type].props, out = {}
+  for (var k in p) out[k] = p[k]
+  return out
+}
+
+// Pin offsets for a placed part, after rotation (0..3 quarter turns) and any
+// prop that changes geometry (resistor leg spacing).
+function pinOffsets(type, rot, props) {
+  var def = parts[type]
+  var out = []
+  for (var i = 0; i < def.pins.length; i++) {
+    var px = def.pins[i].x, py = def.pins[i].y
+    if (type === "resistor" && i === 1) px = (props && props.span) || 4
+    out.push(rotate(px, py, rot))
+  }
+  return out
+}
+
+function rotate(x, y, rot) {
+  switch (((rot % 4) + 4) % 4) {
+    case 1: return { x: -y, y: x }
+    case 2: return { x: -x, y: -y }
+    case 3: return { x: y, y: -x }
+    default: return { x: x, y: y }
+  }
+}
+
+function pinPoints(part) {
+  var offs = pinOffsets(part.type, part.rot, part.props)
+  var out = []
+  for (var i = 0; i < offs.length; i++) out.push({ x: part.x + offs[i].x, y: part.y + offs[i].y })
+  return out
+}
+
+// Readable value with SI prefix: 4700 -> "4.7 k", 1e-7 -> "100 n".
+function si(value, unit) {
+  if (value === 0) return "0 " + unit
+  var prefixes = [[1e9, "G"], [1e6, "M"], [1e3, "k"], [1, ""], [1e-3, "m"], [1e-6, "µ"], [1e-9, "n"], [1e-12, "p"]]
+  var a = Math.abs(value)
+  for (var i = 0; i < prefixes.length; i++) {
+    if (a >= prefixes[i][0] * 0.9995) {
+      var v = value / prefixes[i][0]
+      var s = Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2)
+      s = s.replace(/\.?0+$/, "")
+      return s + " " + prefixes[i][1] + unit
+    }
+  }
+  return value.toExponential(2) + " " + unit
+}
+
+// Resistor color bands (4-band: digit, digit, multiplier, gold tolerance).
+var bandColors = ["#1a1a1a", "#7a4a1e", "#d32f2f", "#f57c00", "#fbc02d", "#388e3c", "#1976d2", "#7b1fa2", "#757575", "#fafafa"]
+function resistorBands(ohms) {
+  if (ohms < 10) return [bandColors[Math.floor(ohms)], bandColors[Math.round(ohms * 10) % 10], "#c9a227", "#c9a227"]
+  var exp = Math.floor(Math.log(ohms) / Math.LN10 + 1e-9) - 1
+  var digits = Math.round(ohms / Math.pow(10, exp))
+  if (digits >= 100) { digits = Math.round(digits / 10); exp += 1 }
+  return [bandColors[Math.floor(digits / 10)], bandColors[digits % 10], bandColors[Math.max(0, Math.min(9, exp))], "#c9a227"]
+}
+
+// Body outline of each part in its own unrotated grid units, relative to its
+// first pin. Used for drawing, clicking and keeping wires off part bodies.
+var boxes = {
+  battery9v: [-0.6, 0.4, 2.6, 5.0],
+  aaPack: [-0.6, 0.4, 2.6, 6.0],
+  benchSupply: [-0.6, 0.4, 4.6, 4.8],
+  resistor: [0, -0.4, 4, 0.4],
+  led: [-0.25, -1.0, 1.25, 0.3],
+  rgbLed: [-0.25, -1.2, 3.25, 0.3],
+  capacitor: [-0.15, -0.7, 1.15, 0.3],
+  electrolytic: [-0.35, -1.5, 1.35, 0.3],
+  pushButton: [0.3, -1.2, 2.7, 1.2],
+  slideSwitch: [-0.45, -1.1, 2.45, 0.3],
+  potentiometer: [-0.5, -2.6, 2.5, 0.3],
+  ldr: [-0.25, -1.0, 1.25, 0.3],
+  thermistor: [-0.25, -0.9, 1.25, 0.3],
+  tmp36: [-0.45, -0.9, 2.45, 0.3],
+  diode: [0, -0.35, 3, 0.35],
+  zener: [0, -0.35, 3, 0.35],
+  npn: [-0.45, -0.9, 2.45, 0.3],
+  pnp: [-0.45, -0.9, 2.45, 0.3],
+  nmos: [-0.45, -0.9, 2.45, 0.3],
+  buzzer: [-0.4, -2.6, 2.4, 0.3],
+  motor: [-0.6, 0.4, 3.6, 4.2],
+  multimeter: [-0.6, 0.4, 5.6, 6.8],
+  omaduino: [-0.8, 0.4, 23.8, 10.0],
+  servo: [-0.4, -3.4, 4.6, 0.3],
+  hcsr04: [-0.8, -2.6, 3.8, 0.3],
+  sevenSeg: [-0.3, -4.2, 8.3, 0.3],
+  motorDriver: [-0.5, -3.0, 9.5, 0.3],
+  robotCar: [-0.8, 0.4, 8.8, 8.4]
+}
+
+function box(type, props) {
+  var b = boxes[type].slice()
+  if (type === "resistor") b[2] = (props && props.span) || 4
+  return b
+}
+
+// Body rectangle on the bench after rotation: { x0, y0, x1, y1 }.
+function benchBox(part) {
+  var b = box(part.type, part.props)
+  var p1 = rotate(b[0], b[1], part.rot), p2 = rotate(b[2], b[3], part.rot)
+  return { x0: part.x + Math.min(p1.x, p2.x), y0: part.y + Math.min(p1.y, p2.y),
+           x1: part.x + Math.max(p1.x, p2.x), y1: part.y + Math.max(p1.y, p2.y) }
+}
+
+// Parts that sit off the breadboard with screw terminals or probe sockets.
+function isOffBoard(type) {
+  return type === "battery9v" || type === "aaPack" || type === "benchSupply" || type === "motor" || type === "multimeter" || type === "omaduino" || type === "robotCar"
+}
+
+// OmaDuino pin index (Catalog order) -> sketch pin number, or a power name.
+function mcuPinNumber(index) {
+  var name = parts.omaduino.pins[index].name
+  if (name === "GND") return "gnd"
+  if (name === "5V") return "5v"
+  if (name === "3.3V") return "3v3"
+  if (name.charAt(0) === "A") return 14 + Number(name.substring(1))
+  return Number(name.substring(1))
+}
+
+// The pin that grounds the netlist, for parts that can power a circuit.
+function groundPin(type) {
+  if (parts[type].category === "power") return 1
+  if (type === "omaduino") return 0
+  return -1
+}
