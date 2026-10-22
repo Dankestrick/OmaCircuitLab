@@ -6,7 +6,7 @@ Read this first, both of you. It covers where things stand at the end of 2026-10
 
 A breadboard circuit simulator and electronics learning tool. It's an Omarchy shell plugin (`io.github.dankestrick.omacircuitlab`, kind `overlay`, no bar icon) opened from the app menu.
 
-- Source: `/home/dank/GitDank/OmaCircuitLab`. This is not a git repo yet.
+- Source: `/home/dank/GitDank/OmaCircuitLab`, a git repo (branch master). Commit after each working step. No GitHub remote yet.
 - Installed copy: `~/.config/omarchy/plugins/io.github.dankestrick.omacircuitlab`.
 - Plan: `PLAN.md`. Engine specs: `docs/ENGINE_CONTRACT.md` and `docs/ENGINE_CONTRACT_MCU.md`.
 
@@ -100,7 +100,7 @@ Grok's `EngineWorker.js` exists, but in the shell it fails with `ReferenceError:
 3. **Grok:** the board coupling from `ENGINE_CONTRACT_MCU.md`, one part at a time in the order in Grok's handoff (sevenSeg → omaduino pins → step order → hcsr04 → servo → motorDriver/robotCar/setProp). **Claude:** test lessons 17–23 in the app, including the robot arena.
 4. **Claude:** schematic symbols in Inspect. Dank stopped this mid-write; confirm he still wants it before doing it.
 5. Measure CPU in the shell while running (blink and robot lessons) and tune `Mcu.STEP_BUDGET` and the step timer if needed.
-6. Marketplace prep: `omarchy-plugin-review` skill, `git init`, GitHub repo `Dankestrick/OmaCircuitLab`, `preview.png`, README screenshots.
+6. Marketplace prep: `omarchy-plugin-review` skill, GitHub repo `Dankestrick/OmaCircuitLab`, `preview.png`, README screenshots.
 
 ## Known gaps and ideas
 
