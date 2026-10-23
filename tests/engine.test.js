@@ -626,6 +626,68 @@ var perfMs = Date.now() - perfT
 console.log("blink 1000 steps", perfMs, "ms")
 assert.ok(perfMs < 1000, "1000 blink steps took " + perfMs + "ms")
 
+// --- HC-SR04: 15 mA load, and pulseIn reports distance * 58 µs ---
+var sonarDc = solve([
+  duinoElement(""),
+  { id: "us", type: "hcsr04", nodes: [1, 5, 6, 0], props: { distance: 30 } }
+], 50)
+assert.strictEqual(sonarDc.converged, true)
+console.log("sonar mA", (sonarDc.parts.us.current * 1000).toFixed(2), "ping", sonarDc.parts.us.pinging)
+assert.ok(sonarDc.parts.us.current > 0.014 && sonarDc.parts.us.current < 0.017, "about 15 mA, was " + sonarDc.parts.us.current)
+assert.strictEqual(sonarDc.parts.us.pinging, false)
+assert.ok(!warnLevel(sonarDc, "info", "us"))
+assert.ok(!warnLevel(sonarDc, "warn", "us"))
+assert.ok(Math.abs(sonarDc.nodeVolts[6]) < 0.05, "echo sits near 0")
+
+var sonarDark = solve([
+  duinoElement(""),
+  { id: "us", type: "hcsr04", nodes: [8, 5, 6, 0], props: { distance: 30 } }
+], 50)
+assert.ok(warnLevel(sonarDark, "warn", "us"), "unpowered sensor warns")
+assert.strictEqual(sonarDark.parts.us.pinging, false)
+
+var pingState = E.createState()
+var pingNet = net([
+  duinoElement(STUB, { 14: 5 }),
+  { id: "us", type: "hcsr04", nodes: [1, 5, 6, 0], props: { distance: 30 } }
+], 50)
+E.solve(pingNet, pingState, 0)
+pingState.mcu.mcu.vm.pins[7].mode = "out"
+pingState.mcu.mcu.vm.pins[7].level = 1
+var pingHigh = E.solve(pingNet, pingState, 0)
+assert.strictEqual(pingHigh.parts.us.pinging, true, "TRIG high means pinging")
+
+function readDistance(cm, trigNode) {
+  var code = McuLib.example("distance")
+  var nodes = { 15: 6 }
+  if (trigNode !== undefined) nodes[14] = trigNode
+  var bare = net([
+    duinoElement(code, nodes),
+    { id: "us", type: "hcsr04", nodes: [1, trigNode === undefined ? 9 : trigNode, 6, 0], props: { distance: cm } }
+  ], 50)
+  var st = E.createState()
+  var last = null
+  var pinged = false
+  for (var i = 0; i < 40; i++) {
+    last = E.solve(bare, st, 0.001)
+    if (last.parts.us && last.parts.us.pinging) pinged = true
+  }
+  return { serial: last.parts.mcu.serial, pinged: pinged, warn: warnLevel(last, "info", "us") }
+}
+var dist30 = readDistance(30, 5)
+console.log("distance serial", JSON.stringify(dist30.serial), "pinged", dist30.pinged)
+assert.ok(/30 cm/.test(dist30.serial), "serial shows 30 cm")
+assert.strictEqual(dist30.pinged, true)
+assert.ok(!dist30.warn)
+
+var distLoose = readDistance(30)
+console.log("unwired trig serial", JSON.stringify(distLoose.serial))
+assert.ok(!/cm/.test(distLoose.serial), "TRIG must be a board pin")
+
+var sonarLesson = stepLesson("sonar", 40)
+console.log("lesson sonar", JSON.stringify(sonarLesson.result.parts.mcu.serial))
+assert.ok(/40 cm/.test(sonarLesson.result.parts.mcu.serial), "lesson sonar reads 40 cm")
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.

@@ -52,7 +52,7 @@ function isTimeDependent(netlist) {
   if (!els) return false
   for (var i = 0; i < els.length; i++) {
     var t = els[i].type
-    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino") return true
+    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04") return true
   }
   return false
 }
@@ -751,6 +751,12 @@ function build(nl, state, v, dt, ref, work) {
       var lp = ledParams(str(el, "color", "red"))
       var vd = limitJunction(work, id, nodeV(v, nd[0]) - nodeV(v, nd[1]), lp.vf + 0.45, -5, lp.nVt, lp.is)
       stampDiode(sys, nd[0], nd[1], vd, lp.is, lp.nVt)
+    } else if (el.type === "hcsr04") {
+      var nSonar = sonarNodes(el, nl.nodeCount)
+      if (!nSonar) continue
+      stampG(sys, nSonar.vcc, nSonar.gnd, 1 / 330)
+      stampG(sys, nSonar.trig, nSonar.gnd, 1 / 1e6)
+      stampG(sys, nSonar.echo, nSonar.gnd, 1 / 1000)
     } else if (el.type === "sevenSeg") {
       var n7 = pins(el, nl.nodeCount, 9)
       if (!n7) continue
@@ -921,6 +927,8 @@ function assemble(nl, state, v, dt, converged, work) {
       fillTmp(p, el, id, pv, work, warnings)
     } else if (kind === "omaduino") {
       fillBoard(p, el, id, pv, state, v, warnings)
+    } else if (kind === "hcsr04") {
+      fillSonar(p, el, id, v, warnings)
     } else {
       pushWarn(warnings, id, "info", "This part isn't in the simulator yet, so it was left unconnected.")
     }
@@ -1504,6 +1512,7 @@ function fillBoard(p, el, id, pv, state, v, warnings) {
 function runBoards(nl, state, result, v, dt) {
   var stepUs = Math.round(dt * 1e6)
   if (stepUs < 1) stepUs = 1
+  var answered = {}
   for (var i = 0; i < nl.elements.length; i++) {
     var el = nl.elements[i]
     if (el.type !== "omaduino") continue
@@ -1520,9 +1529,72 @@ function runBoards(nl, state, result, v, dt) {
         if (node < 0) return 0
         return nodeV(v, node) - nodeV(v, map.gnd)
       },
-      pulseIn: function () { return 0 }
+      pulseIn: function (pin) {
+        return sonarEchoUs(nl, v, map, pin, answered)
+      }
     })
     copyBoardRuntime(result.parts[id], slot, before)
+  }
+  markSonarPings(result, answered)
+}
+
+// VCC, TRIG, ECHO, GND. The echo pin stays at 0 V. pulseIn returns the
+// travel time directly, so the sound pulse is not a circuit transient.
+function sonarNodes(el, nodeCount) {
+  if (!el || el.type !== "hcsr04") return null
+  var n = pins(el, nodeCount, 4)
+  if (!n) return null
+  var cm = num(el, "distance", 30)
+  if (cm < 0) cm = 0
+  return { vcc: n[0], trig: n[1], echo: n[2], gnd: n[3], distance: cm }
+}
+
+function fillSonar(p, el, id, v, warnings) {
+  p.pinging = false
+  var ns = sonarNodes(el, v.length)
+  if (!ns) return
+  var vcc = nodeV(v, ns.vcc) - nodeV(v, ns.gnd)
+  var i = vcc / 330
+  p.current = i
+  p.power = Math.abs(i * vcc)
+  if (vcc > 4) {
+    if (nodeV(v, ns.trig) - nodeV(v, ns.gnd) > 2.5) p.pinging = true
+  } else {
+    pushWarn(warnings, id, "warn", "The distance sensor needs 5V and GND.")
+  }
+}
+
+function sonarEchoUs(nl, v, map, pin, answered) {
+  pin = pin | 0
+  if (!nl || !map || pin < 0 || pin >= 20) return 0
+  var echoNode = map.pins[pin]
+  if (echoNode < 0) return 0
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (el.type !== "hcsr04") continue
+    var ns = sonarNodes(el, v.length)
+    if (!ns || ns.echo !== echoNode) continue
+    if (!(nodeV(v, ns.vcc) - nodeV(v, ns.gnd) > 4)) continue
+    if (!trigOnBoard(nl, ns.trig)) continue
+    answered[partId(el, i)] = true
+    return ns.distance * 58
+  }
+  return 0
+}
+
+function trigOnBoard(nl, trigNode) {
+  for (var i = 0; i < nl.elements.length; i++) {
+    if (nl.elements[i].type !== "omaduino") continue
+    var map = boardMap(nl.elements[i])
+    for (var p = 0; p < 20; p++) if (map.pins[p] === trigNode) return true
+  }
+  return false
+}
+
+function markSonarPings(result, answered) {
+  if (!result || !result.parts) return
+  for (var id in answered) {
+    if (answered[id] && result.parts[id]) result.parts[id].pinging = true
   }
 }
 
