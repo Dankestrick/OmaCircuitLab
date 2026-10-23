@@ -1392,6 +1392,49 @@ assert.ok((spiked.warnings || []).some(function (w) {
   return w.part === "k" && w.message === "The relay coil spiked below -20 V when it turned off. Put a diode across the coil, stripe toward +."
 }), "flyback warning")
 
+// --- 7805 holds 5.0 V from 9 V, and drops out under 7 V ---
+assert.strictEqual(E.isTimeDependent(net([{ id: "u", type: "regulator7805", nodes: [1, 0, 2], props: {} }], 3)), false)
+var reg9 = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "u", type: "regulator7805", nodes: [1, 0, 2], props: {} },
+  { id: "r", type: "resistor", nodes: [2, 0], props: { ohms: 1000 } }
+], 3)
+console.log("7805", part(reg9, "u").volts.toFixed(3), "V", "dropout", part(reg9, "u").dropout, "bat", (-part(reg9, "bat").current).toFixed(4))
+assert.strictEqual(reg9.converged, true)
+assert.ok(Math.abs(part(reg9, "u").volts - 5) < 0.02, "5.0 V out " + part(reg9, "u").volts)
+assert.strictEqual(part(reg9, "u").dropout, false)
+assert.strictEqual(part(reg9, "u").pinCurrents.length, 3)
+var regSum = 0
+part(reg9, "u").pinCurrents.forEach(function (x) { regSum += x })
+assert.ok(Math.abs(regSum) < 1e-6, "7805 KCL " + regSum)
+var regLoad = part(reg9, "u").volts / 1000
+assert.ok(Math.abs(-part(reg9, "bat").current - (regLoad + 0.005)) < 0.001, "battery is Iout + 5 mA " + part(reg9, "bat").current)
+
+var reg6 = solve([
+  { id: "src", type: "benchSupply", nodes: [1, 0], props: { volts: 6, currentLimit: 1 } },
+  { id: "u", type: "regulator7805", nodes: [1, 0, 2], props: {} },
+  { id: "r", type: "resistor", nodes: [2, 0], props: { ohms: 1000 } }
+], 3)
+console.log("7805 drop", part(reg6, "u").volts.toFixed(3), "V", "dropout", part(reg6, "u").dropout)
+assert.strictEqual(reg6.converged, true)
+assert.strictEqual(part(reg6, "u").dropout, true)
+assert.ok(Math.abs(part(reg6, "u").volts - 4) < 0.05, "dropout near 4 V " + part(reg6, "u").volts)
+assert.ok((reg6.warnings || []).some(function (w) {
+  return w.part === "u" && w.message.indexOf("needs at least 7 V in to make 5 V") >= 0
+}), "dropout warning")
+
+var regHot = solve([
+  { id: "src", type: "benchSupply", nodes: [1, 0], props: { volts: 9, currentLimit: 5 } },
+  { id: "u", type: "regulator7805", nodes: [1, 0, 2], props: {} },
+  { id: "r", type: "resistor", nodes: [2, 0], props: { ohms: 2 } }
+], 3)
+console.log("7805 hot", part(regHot, "u").pinCurrents[2].toFixed(3), "A", "converged", regHot.converged)
+assert.strictEqual(regHot.converged, true)
+assert.ok(Math.abs(part(regHot, "u").pinCurrents[2]) > 1, "over 1 A " + part(regHot, "u").pinCurrents[2])
+assert.ok((regHot.warnings || []).some(function (w) {
+  return w.part === "u" && w.message === "This 7805 is passing more than 1 A. It will get hot."
+}), "overcurrent warning")
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.

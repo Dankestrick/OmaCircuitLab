@@ -30,6 +30,8 @@ var IR_VF = 1.2
 var IR_IMAX = 0.05
 var PHOTO_I = 50e-6
 var FUSE_MSG = "The fuse blew: too much current. Fix the short, then press Reset."
+var REG_LOW = "This 7805 needs at least 7 V in to make 5 V."
+var REG_HOT = "This 7805 is passing more than 1 A. It will get hot."
 var BJT_IS = 1e-14
 var BJT_BR = 5
 var LED_NVT = 0.05
@@ -89,7 +91,7 @@ function solve(netlist, state, dt) {
       if (ref >= 0 && ref < nl.nodeCount) v[ref] = 0
     }
 
-    var work = { junc: {}, supplyMode: {}, tmpOn: {}, servoOn: {}, driverScale: {}, hitLimit: false, changed: false }
+    var work = { junc: {}, supplyMode: {}, regMode: {}, tmpOn: {}, servoOn: {}, driverScale: {}, hitLimit: false, changed: false }
     var tNow = Number(state.t)
     if (!isFinite(tNow)) tNow = 0
     // A step is the voltage at the end of dt. A DC solve stays at the current time.
@@ -424,6 +426,42 @@ function stampVsrc(sys, plus, minus, volts, r) {
   if (r) sys.A[k][k] -= r
   sys.z[k] += volts
   return k
+}
+
+// Stay in a region until the input is clearly on the other side of it.
+function regRegion(vin, prev) {
+  if (!(vin > -100)) vin = 0
+  if (prev === "reg") {
+    if (vin >= 6.8) return "reg"
+    if (vin >= 2) return "drop"
+    return "off"
+  }
+  if (prev === "off") {
+    if (vin < 2.2) return "off"
+    if (vin >= 7) return "reg"
+    return "drop"
+  }
+  if (vin >= 7) return "reg"
+  if (vin < 2) return "off"
+  return "drop"
+}
+
+function stampRegulator(sys, src) {
+  // 5 mA from IN to GND no matter which region the output is in.
+  stampI(sys, src.gnd, src.inn, 0.005)
+  if (src.mode === "drop") {
+    // V(out) − V(in) = −2, behind 0.1 Ω. The load current leaves IN.
+    src.k = stampVsrc(sys, src.out, src.inn, -2, 0.1)
+    return
+  }
+  // 5 V (or 0 V when the input is under 2 V) from OUT to GND, behind 0.1 Ω.
+  // The source current is taken from IN, not from GND.
+  src.k = stampVsrc(sys, src.out, src.gnd, src.mode === "reg" ? 5 : 0, 0.1)
+  var k = src.k
+  var ig = uiOf(sys, src.gnd)
+  var ii = uiOf(sys, src.inn)
+  if (ig >= 0) sys.A[ig][k] += 1
+  if (ii >= 0) sys.A[ii][k] -= 1
 }
 
 function stampGmin(sys) {
@@ -782,6 +820,13 @@ function sourceList(nl, v, state, work) {
       if (!(ratio > 0)) ratio = 10
       nExtra++
       list.push({ kind: "xfmr", id: id, p1: nxf[0], p2: nxf[1], s1: nxf[2], s2: nxf[3], ratio: ratio })
+    } else if (kind === "regulator7805") {
+      var nreg = pins(el, nl.nodeCount, 3)
+      if (!nreg) { list.push(null); continue }
+      nExtra++
+      var rmode = work.regMode[id]
+      if (rmode !== "reg" && rmode !== "drop" && rmode !== "off") rmode = regRegion(nodeV(v, nreg[0]) - nodeV(v, nreg[1]), "")
+      list.push({ kind: "reg", id: id, inn: nreg[0], gnd: nreg[1], out: nreg[2], mode: rmode })
     } else {
       list.push(null)
     }
@@ -831,6 +876,20 @@ function noteModes(built, v, work, nl, state) {
     }
   }
   noteRelays(nl, v, work, state)
+  noteRegulators(built, v, work)
+}
+
+function noteRegulators(built, v, work) {
+  if (!work.regMode) work.regMode = {}
+  var srcs = built.sources
+  for (var i = 0; i < srcs.length; i++) {
+    var s = srcs[i]
+    if (!s || s.kind !== "reg") continue
+    var vin = nodeV(v, s.inn) - nodeV(v, s.gnd)
+    var next = regRegion(vin, s.mode)
+    if (next !== s.mode) work.changed = true
+    work.regMode[s.id] = next
+  }
 }
 
 function noteRelays(nl, v, work, state) {
@@ -895,6 +954,11 @@ function build(nl, state, v, dt, ref, work) {
     }
     if (src && src.kind === "xfmr") {
       stampTransformer(sys, src)
+      sources.push(src)
+      continue
+    }
+    if (src && src.kind === "reg") {
+      stampRegulator(sys, src)
       sources.push(src)
       continue
     }
@@ -1189,6 +1253,8 @@ function assemble(nl, state, v, dt, converged, work) {
       fillRelay(p, el, id, pv, state, dt, warnings)
     } else if (kind === "transformer") {
       fillTransformer(p, el, pv)
+    } else if (kind === "regulator7805") {
+      fillRegulator(p, id, pv, warnings)
     } else if (kind === "capacitor" || kind === "electrolytic") {
       fillCap(p, el, id, pv, state, dt, warnings)
     } else if (kind === "multimeter") {
@@ -1801,6 +1867,24 @@ function stampTransformer(sys, src) {
 }
 
 var RELAY_SPIKE = "The relay coil spiked below -20 V when it turned off. Put a diode across the coil, stripe toward +."
+
+function fillRegulator(p, id, pv, warnings) {
+  var vin = (pv[0] || 0) - (pv[1] || 0)
+  var vout = (pv[2] || 0) - (pv[1] || 0)
+  var target = vin - 2
+  if (target > 5) target = 5
+  if (target < 0) target = 0
+  var iOut = (vout - target) / 0.1
+  var iIn = -iOut + 0.005
+  var iGnd = -0.005
+  p.current = iIn
+  p.volts = vout
+  p.dropout = vin < 7
+  p.power = Math.abs((pv[0] || 0) * iIn + (pv[1] || 0) * iGnd + (pv[2] || 0) * iOut)
+  p.pinCurrents = [iIn, iGnd, iOut]
+  if (vin < 7) pushWarn(warnings, id, "warn", REG_LOW)
+  if (Math.abs(iOut) > 1) pushWarn(warnings, id, "warn", REG_HOT)
+}
 
 function fillRelay(p, el, id, pv, state, dt, warnings) {
   var coil = (pv[0] || 0) - (pv[1] || 0)
