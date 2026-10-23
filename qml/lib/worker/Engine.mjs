@@ -2483,6 +2483,16 @@ export function syncBoards(nl, state) {
     var id = partId(el, i)
     live[id] = true
     var code = el.props && el.props.code ? String(el.props.code) : ""
+    // Saved benches cap a sketch at 65536. A live upload can be longer, and
+    // compiling it runs with no time budget. Drop the worker's copy so the
+    // big string can be collected, and keep a one-character marker so the
+    // next solve still reports the same error.
+    if (code.length > 65536) {
+      code = " "
+      if (el.props) el.props.code = code
+      state.mcu[id] = { code: code, type: el.type, vm: null, error: "This sketch is too long.", errorLine: 1 }
+      continue
+    }
     var slot = state.mcu[id]
     if (slot && slot.code === code && slot.type === el.type) continue
     if (!code) {

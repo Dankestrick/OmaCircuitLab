@@ -1936,6 +1936,26 @@ assert.ok(ctorBench.parts.p0 && ctorBench.parts.p1)
 assert.strictEqual(Object.prototype.hasOwnProperty.call(ctorBench.parts, "constructor"), false)
 assert.strictEqual(Object.prototype.hasOwnProperty.call(ctorBench.parts, "prototype"), false)
 
+var longSketch = "void setup() {}\nvoid loop() {}\n"
+while (longSketch.length <= 65536) longSketch += "x"
+var longBoard = duinoElement(longSketch)
+var longState = E.createState()
+var longResult = E.solve(net([longBoard], 50), longState, 0)
+assert.strictEqual(longResult.converged, true)
+assert.strictEqual(longResult.parts.mcu.error, "This sketch is too long.")
+assert.strictEqual(longResult.parts.mcu.errorLine, 1)
+assert.strictEqual(longBoard.props.code, " ")
+var longAgain = E.solve(net([longBoard], 50), longState, 0)
+assert.strictEqual(longAgain.parts.mcu.error, "This sketch is too long.")
+var fit = "void setup() {}\nvoid loop() {}\n/*"
+while (fit.length < 65534) fit += " "
+fit += "*/"
+assert.strictEqual(fit.length, 65536)
+var fitBoard = duinoElement(fit)
+var fitResult = solve([fitBoard], 50)
+assert.strictEqual(fitResult.parts.mcu.error, "", "a 65536-character sketch still compiles")
+assert.strictEqual(fitBoard.props.code.length, 65536)
+
 import(pathToFileURL(path.join(__dirname, "..", "qml", "lib", "worker", "Engine.mjs")).href).then(function (mod) {
   assert.strictEqual(typeof mod.solve, "function")
   assert.strictEqual(typeof mod.createState, "function")
