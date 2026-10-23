@@ -39,3 +39,24 @@ console.log("routed in", Date.now() - t0, "ms")
 assert.strictEqual(JSON.stringify(C.resistorBands(220).slice(0,3)), JSON.stringify([C.bandColors[2], C.bandColors[2], C.bandColors[1]]))
 assert.strictEqual(C.si(4700, "Ω"), "4.7 kΩ")
 console.log("all ok")
+// Extra breadboards: separate metal, named "board 2", and the netlist sizes
+// itself from bench.boards.
+{
+  B.setBoards(2)
+  const o2 = B.boardOrigin(1)
+  const h = B.holeAt(o2.x, o2.y + 3)
+  assert.strictEqual(h.board, 1); assert.ok(/^b2:col:1:/.test(h.strip)); assert.ok(/Board 2/.test(h.label))
+  assert.notStrictEqual(h.strip, B.holeAt(B.boardX, B.boardY + 3).strip)
+  assert.strictEqual(B.allHoles().length, 2 * B.allHoles(0).length)
+  const two = { boards: 2, parts: [
+      { id: "bat", type: "battery9v", x: 2, y: 10, rot: 0, props: C.defaults("battery9v") },
+      { id: "r", type: "resistor", x: o2.x + 2, y: o2.y + 3, rot: 0, props: C.defaults("resistor") } ],
+    wires: [{ id: "w", a: { x: 2, y: 10 }, b: { x: o2.x + 2, y: o2.y + 4 } }] }
+  const nl2 = B.buildNetlist(two)
+  const r = nl2.elements.find(e => e.id === "r")
+  assert.strictEqual(r.nodes[0], nl2.elements.find(e => e.id === "bat").nodes[0])
+  assert.strictEqual(nl2.issues.length, 0)
+  B.buildNetlist({ parts: [], wires: [] })
+  assert.strictEqual(B.holeAt(o2.x, o2.y + 3), null, "board 2 gone with boards = 1")
+  console.log("boards ok")
+}

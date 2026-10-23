@@ -17,6 +17,11 @@ var symmetric = { resistor: true, capacitor: true, pushButton: true, ldr: true, 
 function holeName(p) {
   var h = Bench.holeAt(p.x, p.y)
   if (!h) return null
+  var on = h.board > 0 ? " of board " + (h.board + 1) : ""
+  if (h.kind === "rail") return "the " + h.side + " " + (h.sign === "+" ? "red + rail" : "blue − rail") + on + " at column " + h.column
+  return (h.board > 0 ? "board " + (h.board + 1) + " hole " : "") + h.letter + h.column
+}
+function holeName0(h) {
   if (h.kind === "rail") return "the " + h.side + " " + (h.sign === "+" ? "red + rail" : "blue − rail") + " at column " + h.column
   return h.letter + h.column
 }

@@ -18,6 +18,9 @@ Item {
   property bool running: false
   property var motorAngles: ({})
   property var guideMarks: []          // holes the Guide's current step uses
+  // Breadboards on this bench (1-3); the bench data's `boards` field.
+  readonly property int boards: { var _ = revision; return Bench.setBoards(Bench.boardsOf(bench)) }
+  readonly property real benchW: 82 + Bench.BOARD_STEP * (boards - 1)
 
   property string placingType: ""
   property int placingRot: 0
@@ -46,8 +49,8 @@ Item {
 
   // Zoom to what's on the bench (the breadboard plus every part and wire).
   function fit() {
-    var r = Bench.boardRect()
-    var x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h
+    var r = Bench.boardRect(0), rl = Bench.boardRect(boards - 1)
+    var x0 = r.x, y0 = r.y, x1 = rl.x + rl.w, y1 = r.y + r.h
     for (var i = 0; i < bench.parts.length; i++) {
       var b = Catalog.benchBox(bench.parts[i])
       x0 = Math.min(x0, b.x0); y0 = Math.min(y0, b.y0 - 0.8); x1 = Math.max(x1, b.x1); y1 = Math.max(y1, b.y1)
@@ -90,10 +93,11 @@ Item {
         if (x > b[k].x0 && x < b[k].x1 && y > b[k].y0 && y < b[k].y1) return true
       return false
     }
-    routes = Router.routeAll(bench.wires, overPart, { w: Bench.benchW, h: Bench.benchH })
+    routes = Router.routeAll(bench.wires, overPart, { w: view.benchW, h: Bench.benchH })
     wiresCanvas.requestPaint()
   }
   onRevisionChanged: reroute()
+  onBoardsChanged: { reroute(); Qt.callLater(fit) }
   Component.onCompleted: { reroute(); Qt.callLater(fit) }
 
   // ---------------------------------------------------------------- hit tests
@@ -280,7 +284,7 @@ Item {
       var body = hole.kind === "rail"
         ? "Power rail: every hole along this line is connected. Wire your supply's " + (hole.sign === "+" ? "+ (red)" : "− (black)") + " here, then tap power anywhere along it."
         : "The five holes " + (hole.half === "top" ? "a–e" : "f–j") + " in column " + hole.column + " are connected inside the board (they light up now). The center channel separates the two halves."
-      return { title: hole.label, body: body, stats: hv !== null ? { v: Catalog.si(hv, "V") + " to ground" } : null }
+      return { title: hole.label.charAt(0).toUpperCase() + hole.label.substring(1), body: body, stats: hv !== null ? { v: Catalog.si(hv, "V") + " to ground" } : null }
     }
     return null
   }
@@ -291,7 +295,7 @@ Item {
     id: world
     x: view.offX
     y: view.offY
-    width: Bench.benchW * view.cell
+    width: view.benchW * view.cell
     height: Bench.benchH * view.cell
 
     // Workbench mat with a faint dot grid: solid so see-through themes stay readable.
@@ -301,9 +305,14 @@ Item {
       radius: view.cell * 0.4
     }
 
-    Canvas {
+    // One canvas per breadboard; each draws board 1's picture shifted over.
+    Repeater {
+      model: view.boards
+      delegate: Canvas {
       id: boardCanvas
-      readonly property var r: Bench.boardRect()
+      required property int index
+      readonly property real dx: index * Bench.BOARD_STEP
+      readonly property var r: { var b = Bench.boardRect(0); return { x: b.x + dx, y: b.y, w: b.w, h: b.h } }
       x: r.x * view.cell
       y: r.y * view.cell
       width: r.w * view.cell
@@ -316,12 +325,13 @@ Item {
         ctx.reset()
         ctx.save()
         ctx.scale(c, c)
-        ctx.translate(-r.x, -r.y)
+        var b0 = Bench.boardRect(0)
+        ctx.translate(-b0.x, -b0.y)
         // Board body with a soft shadow.
         ctx.fillStyle = "rgba(0,0,0,0.35)"
-        ctx.fillRect(r.x + 0.15, r.y + 0.2, r.w, r.h)
+        ctx.fillRect(b0.x + 0.15, b0.y + 0.2, b0.w, b0.h)
         ctx.fillStyle = "#f3f1ea"
-        ctx.fillRect(r.x, r.y, r.w, r.h)
+        ctx.fillRect(b0.x, b0.y, b0.w, b0.h)
         // Center channel.
         ctx.fillStyle = "#dedbd1"
         ctx.fillRect(Bench.boardX - 1.2, Bench.boardY + 8.25, Bench.columns + 1.4, 1.5)
@@ -332,7 +342,7 @@ Item {
           ctx.fillRect(Bench.boardX - 0.6, Bench.boardY + stripes[s][0] + stripes[s][1] - 0.04, Bench.columns - 0.8, 0.08)
         }
         // Holes.
-        var holes = Bench.allHoles()
+        var holes = Bench.allHoles(0)
         ctx.fillStyle = "#3b3b3b"
         for (var i = 0; i < holes.length; i++) ctx.fillRect(holes[i].x - 0.17, holes[i].y - 0.17, 0.34, 0.34)
         // Labels: rail signs, row letters, every 5th column number.
@@ -355,12 +365,14 @@ Item {
           t(String(col), Bench.boardX + col - 1, Bench.boardY + 2.05, "#6d6a60")
           t(String(col), Bench.boardX + col - 1, Bench.boardY + 14.95, "#6d6a60")
         }
+        if (index > 0) t("Board " + (index + 1), Bench.boardX + Bench.columns / 2, Bench.boardY - 1.0, "#6d6a60")
         ctx.restore()
         ctx.restore()
       }
       Connections {
         target: view
         function onCellChanged() { boardCanvas.requestPaint() }
+      }
       }
     }
 
@@ -854,7 +866,7 @@ Item {
       }
       if (d.kind === "wire") {
         var to = { x: Math.round(g.x), y: Math.round(g.y) }
-        d.preview = Router.route(d.from, to, new Router.Occupancy(), function () { return false }, { w: Bench.benchW, h: Bench.benchH })
+        d.preview = Router.route(d.from, to, new Router.Occupancy(), function () { return false }, { w: view.benchW, h: Bench.benchH })
         var snap = view.snapPoint(g)
         view.hoverPoint = snap
         wiresCanvas.requestPaint()

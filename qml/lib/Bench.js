@@ -7,9 +7,33 @@
 
 var benchW = 82
 var benchH = 44
-var boardX = 10   // grid position of the board's column 1, top rail
+var boardX = 10   // grid position of the first board's column 1, top rail
 var boardY = 6
 var columns = 63
+var BOARD_STEP = 70   // extra boards sit to the right, this far apart
+var MAX_BOARDS = 3
+
+// How many breadboards the bench has. The bench's own `boards` field sets
+// it (Overlay calls setBoards when the bench changes); 1 when missing.
+var boardCount = 1
+function setBoards(n) {
+  boardCount = Math.max(1, Math.min(MAX_BOARDS, Math.round(Number(n) || 1)))
+  benchW = 82 + BOARD_STEP * (boardCount - 1)
+  return boardCount
+}
+function boardsOf(bench) { return bench && bench.boards ? Math.max(1, Math.min(MAX_BOARDS, bench.boards)) : 1 }
+
+// Origin (column 1, top rail) of board k (0-based).
+function boardOrigin(k) { return { x: boardX + k * BOARD_STEP, y: boardY } }
+
+// Which board a bench x is over, or -1.
+function boardIndexAt(x) {
+  for (var k = 0; k < boardCount; k++) {
+    var c = x - boardOrigin(k).x
+    if (c >= -2 && c <= columns + 1) return k
+  }
+  return -1
+}
 
 // Board-relative rows. 0/1 and 16/17 are the power rails, 3..7 are rows a-e,
 // 10..14 are rows f-j. The gap between e and f is the center channel, exactly
@@ -18,32 +42,47 @@ var railRows = { 0: { sign: "+", side: "top" }, 1: { sign: "−", side: "top" },
 var rowLetters = { 3: "a", 4: "b", 5: "c", 6: "d", 7: "e", 10: "f", 11: "g", 12: "h", 13: "i", 14: "j" }
 var boardRows = 18
 
-function boardRect() {
-  return { x: boardX - 1.5, y: boardY - 1.5, w: columns - 1 + 3, h: boardRows - 1 + 3 }
+function boardRect(k) {
+  var o = boardOrigin(k || 0)
+  return { x: o.x - 1.5, y: o.y - 1.5, w: columns - 1 + 3, h: boardRows - 1 + 3 }
+}
+
+function boardRects() {
+  var out = []
+  for (var k = 0; k < boardCount; k++) out.push(boardRect(k))
+  return out
 }
 
 // Rail holes come in groups of five with a gap, like a real board.
 function isRailColumn(c) { return c >= 1 && c <= 61 && (c - 1) % 6 !== 5 }
 
 // Describe the hole at bench grid point (x, y), or null when it is not a hole.
+// Board 1's strips keep their old names; boards 2 and 3 add "b2:"/"b3:".
 function holeAt(x, y) {
-  var c = x - boardX, r = y - boardY
+  var k = boardIndexAt(x)
+  if (k < 0) return null
+  var o = boardOrigin(k)
+  var c = x - o.x, r = y - o.y
   if (c < 0 || c >= columns || r < 0 || r >= boardRows) return null
+  var pre = k === 0 ? "" : "b" + (k + 1) + ":"
+  var named = k === 0 ? "" : "Board " + (k + 1) + ", "
   if (railRows[r] !== undefined) {
     if (!isRailColumn(c)) return null
     var rail = railRows[r]
-    return { strip: "rail:" + rail.side + rail.sign, kind: "rail", sign: rail.sign, side: rail.side, column: c + 1, row: r,
-             label: (rail.side === "top" ? "Top " : "Bottom ") + (rail.sign === "+" ? "+ (red) rail" : "− (blue) rail") }
+    return { strip: pre + "rail:" + rail.side + rail.sign, kind: "rail", sign: rail.sign, side: rail.side, column: c + 1, row: r, board: k,
+             label: named + (rail.side === "top" ? "top " : "bottom ") + (rail.sign === "+" ? "+ (red) rail" : "− (blue) rail") }
   }
   var letter = rowLetters[r]
   if (!letter) return null
   var half = r <= 7 ? "top" : "bottom"
-  return { strip: "col:" + (c + 1) + ":" + half, kind: "strip", column: c + 1, row: r, letter: letter, half: half,
-           label: "Hole " + letter + (c + 1) }
+  return { strip: pre + "col:" + (c + 1) + ":" + half, kind: "strip", column: c + 1, row: r, letter: letter, half: half, board: k,
+           label: named + "hole " + letter + (c + 1) }
 }
 
 function isOnBoard(x, y) {
-  var c = x - boardX, r = y - boardY
+  var k = boardIndexAt(x)
+  if (k < 0) return false
+  var c = x - boardOrigin(k).x, r = y - boardY
   return c >= -1 && c <= columns && r >= -1 && r <= boardRows
 }
 
@@ -52,8 +91,9 @@ function stripHoles(x, y) {
   var h = holeAt(x, y)
   if (!h) return []
   var out = []
+  var ox = boardOrigin(h.board).x
   if (h.kind === "rail") {
-    for (var c = 0; c < columns; c++) if (isRailColumn(c)) out.push({ x: boardX + c, y: boardY + h.row })
+    for (var c = 0; c < columns; c++) if (isRailColumn(c)) out.push({ x: ox + c, y: boardY + h.row })
   } else {
     var r0 = h.half === "top" ? 3 : 10
     for (var r = r0; r < r0 + 5; r++) out.push({ x: x, y: boardY + r })
@@ -61,11 +101,16 @@ function stripHoles(x, y) {
   return out
 }
 
-function allHoles() {
+// Holes of board k (all boards when k is missing).
+function allHoles(k) {
   var out = []
-  for (var r = 0; r < boardRows; r++)
-    for (var c = 0; c < columns; c++)
-      if (holeAt(boardX + c, boardY + r)) out.push({ x: boardX + c, y: boardY + r })
+  for (var b = 0; b < boardCount; b++) {
+    if (k !== undefined && b !== k) continue
+    var ox = boardOrigin(b).x
+    for (var r = 0; r < boardRows; r++)
+      for (var c = 0; c < columns; c++)
+        if (holeAt(ox + c, boardY + r)) out.push({ x: ox + c, y: boardY + r })
+  }
   return out
 }
 
@@ -89,6 +134,7 @@ function pointKey(p) { return "p:" + p.x + "," + p.y }
 //     pointNode: { "x,y": n }, issues: [...] }
 // Node 0 is ground: the − terminal of the first power source, if any.
 function buildNetlist(bench) {
+  setBoards(boardsOf(bench))
   var uf = new UnionFind()
   var issues = []
   var occupied = {}

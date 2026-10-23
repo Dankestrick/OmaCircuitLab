@@ -179,7 +179,18 @@ Item {
     circuitChanged()
   }
 
-  function clearBench() { setBench({ parts: [], wires: [] }, "Clear") }
+  function clearBench() { setBench({ parts: [], wires: [], boards: Bench.boardsOf(bench) }, "Clear") }
+
+  // More breadboards sit to the right. Parts left on a removed board just
+  // stop being connected; Undo brings the board back.
+  function changeBoards(delta) {
+    var n = Math.max(1, Math.min(Bench.MAX_BOARDS, Bench.boardsOf(bench) + delta))
+    if (n === Bench.boardsOf(bench)) return
+    bench.boards = n
+    revision++
+    pushHistory()
+    circuitChanged()
+  }
 
   // An edit happened: save soon, and re-solve if running.
   function circuitChanged() {
@@ -694,6 +705,28 @@ Item {
                 background: root.cardBg
                 options: Catalog.categories.map(function (c) { return { value: c.id, label: c.label } })
                 onChanged: function (v) { root.category = v }
+              }
+
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.spacing.sm
+                Text {
+                  Layout.fillWidth: true
+                  text: "Breadboards"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: root.fSmall
+                  font.bold: true
+                }
+                ToolButton { label: "−"; tip: "Remove the last breadboard"; enabledLook: benchView.boards > 1; onClicked: root.changeBoards(-1) }
+                Text {
+                  text: String(benchView.boards)
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: root.fBody
+                  font.bold: true
+                }
+                ToolButton { label: "+"; tip: "Add another breadboard to the right (up to 3)"; enabledLook: benchView.boards < 3; onClicked: root.changeBoards(1) }
               }
 
               Text {
