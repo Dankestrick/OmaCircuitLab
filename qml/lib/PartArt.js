@@ -424,6 +424,21 @@ var painters = {
     }
     terminal(ctx, 1, 0, "#e53935"); terminal(ctx, 4, 0, "#1b1b1b")
     label(ctx, "COM", 4, 5.8, 0.38, INK); label(ctx, "V Ω A", 1, 5.8, 0.38, "#b71c1c")
+  },
+  // The lead and jaw are drawn by the bench, from the socket at (2.5, 0.3).
+  clampMeter: function (ctx, p, live) {
+    roundRect(ctx, 0, 0.3, 5, 5.9, 0.45)
+    ctx.fillStyle = "#ef6c00"; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 0.06; ctx.stroke()
+    roundRect(ctx, 0.35, 1.0, 4.3, 1.9, 0.15)
+    ctx.fillStyle = "#c5d6b0"; ctx.fill(); ctx.strokeStyle = "#5d6b4a"; ctx.lineWidth = 0.04; ctx.stroke()
+    label(ctx, live.reading || "– – –", 2.5, 1.95, 0.74, "#1b2410")
+    // Jaw badge: an open ring around a wire.
+    ctx.strokeStyle = "#212121"; ctx.lineWidth = 0.28
+    ctx.beginPath(); ctx.arc(2.5, 4.2, 0.85, -Math.PI * 0.3, Math.PI * 1.3); ctx.stroke()
+    ctx.strokeStyle = "#ffcc80"; ctx.lineWidth = 0.14
+    ctx.beginPath(); ctx.moveTo(1.2, 4.2); ctx.lineTo(3.8, 4.2); ctx.stroke()
+    label(ctx, "CLAMP  A", 2.5, 5.65, 0.4, "#212121")
+    ctx.fillStyle = "#212121"; ctx.beginPath(); ctx.arc(2.5, 0.3, 0.3, 0, Math.PI * 2); ctx.fill()
   }
 }
 

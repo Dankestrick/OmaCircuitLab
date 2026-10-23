@@ -7,6 +7,7 @@ import qs.Commons
 import qs.Ui
 import "lib/Catalog.js" as Catalog
 import "lib/Bench.js" as Bench
+import "lib/Clamp.js" as Clamp
 import "lib/Lessons.js" as Lessons
 import "lib/Arena.js" as Arena
 
@@ -145,7 +146,8 @@ Item {
   // An edit happened: save soon, and re-solve if running.
   function circuitChanged() {
     saveTimer.restart()
-    if (running) loadEngine()
+    if (running && anyBurnt()) resetSim()   // the fix goes in with fresh parts
+    else if (running) loadEngine()
     else netlist = Bench.buildNetlist(bench)   // keeps "How it's connected" current while stopped
   }
 
@@ -161,7 +163,7 @@ Item {
       if (root.staleReplies > 0) { root.staleReplies--; return }
       root.engineBusy = false
       if (!msg || msg.kind !== "result") return
-      root.result = msg.result
+      root.result = Clamp.annotate(root.bench, root.netlist, msg.result)
       if (root.pendingLoad) { root.pendingLoad = false; root.loadEngine() }
     }
   }
@@ -186,12 +188,21 @@ Item {
     if (engineBusy) { pendingLoad = true; return }
     engineBusy = true
     // Only what the solver needs crosses to the worker thread.
-    engine.sendMessage({ cmd: "load", netlist: { nodeCount: netlist.nodeCount, ground: netlist.ground, elements: netlist.elements } })
+    // Clamp meters only watch; Clamp.annotate reads them after each solve.
+    var els = netlist.elements.filter(function (e) { return e.type !== "clampMeter" })
+    engine.sendMessage({ cmd: "load", netlist: { nodeCount: netlist.nodeCount, ground: netlist.ground, elements: els } })
   }
 
+  function anyBurnt() {
+    if (!result || !result.parts) return false
+    for (var id in result.parts) if (result.parts[id].burnt) return true
+    return false
+  }
+
+  // Every Run starts with fresh parts and empty capacitors.
   function startSim() {
     running = true
-    loadEngine()
+    resetSim()
   }
   function stopSim() {
     running = false
@@ -499,7 +510,8 @@ Item {
       Keys.onPressed: function (event) {
         var ctrl = event.modifiers & Qt.ControlModifier
         if (event.key === Qt.Key_Escape) {
-          if (benchView.placingType !== "") benchView.placingType = ""
+          if (benchView.clipping !== "") { benchView.clipping = ""; benchView.clipHover = null }
+          else if (benchView.placingType !== "") benchView.placingType = ""
           else if (benchView.selectedPart || benchView.selectedWire) { benchView.selectedPart = ""; benchView.selectedWire = "" }
           else root.dismiss()
         } else if (ctrl && event.key === Qt.Key_Z) {

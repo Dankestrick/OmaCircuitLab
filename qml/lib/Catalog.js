@@ -259,6 +259,13 @@ var parts = {
     props: { mode: "V" },
     editable: [{ key: "mode", label: "Mode", kind: "choice", options: ["V", "A", "Ω"], unit: "" }],
     tip: "Measures volts (V) across a part, current (A) when placed in line with the circuit, or resistance (Ω) of an unpowered part. Wire the red and black probe holes to the places you want to measure."
+  },
+  clampMeter: {
+    name: "Clamp meter (amps)", category: "meters", w: 5, h: 6,
+    pins: [],
+    props: { clip: null },
+    editable: [],
+    tip: "Reads the current through a wire or a part leg without breaking the circuit: its jaw closes around the wire and senses the magnetic field the current makes. Click the meter, then click any wire or leg to clip on. Clip it before and after a part, or on each branch, and compare."
   }
 }
 
@@ -359,6 +366,7 @@ var boxes = {
   buzzer: [-0.4, -2.6, 2.4, 0.3],
   motor: [-0.6, 0.4, 3.6, 4.2],
   multimeter: [-0.6, 0.4, 5.6, 6.8],
+  clampMeter: [0, 0, 5, 6.2],
   omaduino: [-0.8, 0.4, 23.8, 10.0],
   servo: [-0.4, -3.4, 4.6, 0.3],
   hcsr04: [-0.8, -2.6, 3.8, 0.3],

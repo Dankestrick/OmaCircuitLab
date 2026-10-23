@@ -409,6 +409,46 @@ var lessons = [
     }
   },
   {
+    id: "clamp",
+    title: "Follow the current with a clamp meter",
+    idea: "A clamp meter's jaw closes around a wire and reads the current inside it, without cutting anything. In one loop the current is the same everywhere: before a resistor, after it, through the LED. Where the path splits, the branches share it, and they add back up to what the battery gives.",
+    steps: [
+      "Build two LED branches off the + rail, one with 470 Ω and one with 1 kΩ.",
+      "Add a clamp meter from Meters. Click the battery's red wire to clip it on, then Run.",
+      "Click the jaw, then click the wire into the 470 Ω branch. Then try the 1 kΩ branch.",
+      "Clip before and after a resistor too: same current on both sides."
+    ],
+    build: function () {
+      var p = [], w = []
+      battery(p, w)
+      p.push(part("r1", "resistor", H(10, "a"), 0, { ohms: 470 }))
+      p.push(part("d1", "led", H(14, "c"), 0, { color: "red" }))
+      w.push(wire("w1", rail("top", "+", 10), H(10, "b"), "red"))
+      w.push(wire("w2", H(15, "d"), rail("top", "−", 15), "black"))
+      p.push(part("r2", "resistor", H(20, "a"), 0, { ohms: 1000 }))
+      p.push(part("d2", "led", H(24, "c"), 0, { color: "green" }))
+      w.push(wire("w3", rail("top", "+", 21), H(20, "b"), "red"))
+      w.push(wire("w4", H(25, "d"), rail("top", "−", 26), "black"))
+      p.push(part("cm", "clampMeter", { x: 3, y: 18 }, 0, { clip: { kind: "wire", id: "wbp", x: 8, y: 7 } }))
+      return { parts: p, wires: w }
+    },
+    check: function (ctx) {
+      var cms = partsOf(ctx, "clampMeter")
+      if (cms.length === 0) return { done: false, hint: "Add a clamp meter from Meters." }
+      var r = needRun(ctx); if (r) return r
+      var bats = partsOf(ctx, "battery9v")
+      var total = bats.length ? Math.abs(liveOf(ctx, bats[0]).current || 0) : 0
+      for (var i = 0; i < cms.length; i++) {
+        var a = liveOf(ctx, cms[i]).value
+        if (!(a > 1e-4)) continue
+        if (total > 0 && a < total - 0.001)
+          return { done: true, hint: "This branch carries " + Catalog.si(a, "A") + " of the battery's " + Catalog.si(total, "A") + ". The branches add up to the total." }
+        return { done: false, hint: "It reads " + Catalog.si(a, "A") + ", all of the battery's current. Now clip it on one branch: click the jaw, then a branch wire." }
+      }
+      return { done: false, hint: "Click the clamp meter, then click a wire carrying current." }
+    }
+  },
+  {
     id: "switch2",
     title: "A two-way switch",
     idea: "A slide switch connects its middle leg to one side or the other. Wire + to the middle, and the switch chooses which LED gets power: the idea behind every selector.",

@@ -2,6 +2,7 @@ import QtQuick
 import "lib/Catalog.js" as Catalog
 import "lib/Bench.js" as Bench
 import "lib/Router.js" as Router
+import "lib/Clamp.js" as Clamp
 
 // The workbench: breadboard, parts and wires, plus every mouse interaction.
 // Parts and wires are plain data in `bench`; everything here is drawn from it
@@ -22,6 +23,8 @@ Item {
   property string wireColor: "red"
   property string selectedPart: ""
   property string selectedWire: ""
+  property string clipping: ""        // clamp meter waiting for a click on a wire or leg
+  property var clipHover: null        // what that click would clip onto
   property string fontFamily: "sans-serif"
   property color benchColor: "#20262b"
   property color dotColor: "#3a434b"
@@ -145,6 +148,48 @@ Item {
     return Math.sqrt(x * x + y * y)
   }
 
+  // What a clamp would close around at g: a part leg first, else a wire.
+  function clipTarget(g) {
+    for (var i = bench.parts.length - 1; i >= 0; i--) {
+      var p = bench.parts[i]
+      if (p.type === "clampMeter") continue
+      var pts = Catalog.pinPoints(p)
+      for (var j = 0; j < pts.length; j++)
+        if (Math.abs(g.x - pts[j].x) < 0.45 && Math.abs(g.y - pts[j].y) < 0.45)
+          return { kind: "leg", part: p.id, pin: j, x: pts[j].x, y: pts[j].y }
+    }
+    var w = wireAt(g)
+    if (!w) return null
+    var q = Clamp.jawPoint(bench, routes, { kind: "wire", id: w.id, x: g.x, y: g.y })
+    return { kind: "wire", id: w.id, x: Math.round(q.x * 10) / 10, y: Math.round(q.y * 10) / 10 }
+  }
+
+  // The clamp meter whose jaw is under g, or null.
+  function jawAt(g) {
+    for (var i = bench.parts.length - 1; i >= 0; i--) {
+      var p = bench.parts[i]
+      if (p.type !== "clampMeter" || !p.props.clip) continue
+      var j = Clamp.jawPoint(bench, routes, p.props.clip)
+      if (j && Math.abs(g.x - j.x) < 0.5 && Math.abs(g.y - j.y) < 0.5) return p
+    }
+    return null
+  }
+
+  // Where the clamp's lead leaves the meter.
+  function socketOf(p) {
+    var s = Catalog.rotate(2.5, 0.3, p.rot)
+    return { x: p.x + s.x, y: p.y + s.y }
+  }
+
+  function startClip(id) {
+    clipping = id
+    clipHover = null
+    selectedPart = id
+    selectedWire = ""
+    hoverChanged({ title: "Clip the clamp on", body: "Click a wire or a part leg to read the current through it. Right-click or Esc cancels." })
+    wiresCanvas.requestPaint()
+  }
+
   // A point where a wire may start or end: a hole, a terminal on an
   // off-board part, or the end of another wire.
   function isWirePoint(x, y) {
@@ -204,6 +249,7 @@ Item {
         if (live.pinVolts && live.pinVolts.length >= 2) bits.push("Voltage across " + Catalog.si(Math.abs(live.pinVolts[0] - live.pinVolts[1]), "V"))
         if (live.power !== undefined && live.power > 1e-4) bits.push("Power " + Catalog.si(live.power, "W"))
         if (bits.length) lines.push(bits.join("  ·  "))
+        if (part.type === "clampMeter") lines.push(live.note || "Reading " + live.reading)
       }
       var pins = Catalog.pinPoints(part)
       for (var i = 0; i < pins.length; i++) {
@@ -392,6 +438,47 @@ Item {
             ctx.beginPath(); ctx.arc(ends[e].x, ends[e].y, 0.11, 0, Math.PI * 2); ctx.fill()
           }
         }
+        // Clamp meters: a lead from the meter to its jaw, and the reading by the jaw.
+        for (var m = 0; m < view.bench.parts.length; m++) {
+          var cm = view.bench.parts[m]
+          if (cm.type !== "clampMeter") continue
+          var s0 = view.socketOf(cm)
+          var jw = cm.props.clip ? Clamp.jawPoint(view.bench, view.routes, cm.props.clip) : null
+          var end = jw || { x: s0.x, y: s0.y - 1.4 }
+          var dist = Math.sqrt((end.x - s0.x) * (end.x - s0.x) + (end.y - s0.y) * (end.y - s0.y))
+          var cx = (s0.x + end.x) / 2, cy = (s0.y + end.y) / 2 + Math.min(4, dist * 0.25)
+          for (var pass = 0; pass < 2; pass++) {
+            ctx.strokeStyle = pass === 0 ? "rgba(255,255,255,0.45)" : "#263238"
+            ctx.lineWidth = pass === 0 ? 0.3 : 0.18
+            ctx.beginPath(); ctx.moveTo(s0.x, s0.y); ctx.quadraticCurveTo(cx, cy, end.x, end.y); ctx.stroke()
+          }
+          // Jaw: an orange ring with a small gap, around the wire or leg.
+          var open = view.clipping === cm.id
+          ctx.strokeStyle = "#1a1a1a"; ctx.lineWidth = 0.3
+          ctx.beginPath(); ctx.arc(end.x, end.y, 0.42, 0.35, Math.PI * 2 - 0.35); ctx.stroke()
+          ctx.strokeStyle = open ? "#ffd600" : "#ff9100"; ctx.lineWidth = 0.18
+          ctx.beginPath(); ctx.arc(end.x, end.y, 0.42, 0.35, Math.PI * 2 - 0.35); ctx.stroke()
+          var live = view.running && view.result && view.result.parts ? view.result.parts[cm.id] : null
+          if (jw && live && live.reading && live.value === live.value) {
+            ctx.save()
+            ctx.scale(0.01, 0.01)
+            ctx.font = "bold 46px sans-serif"
+            var tw = ctx.measureText(live.reading).width
+            var tx = end.x * 100 + 55, ty = end.y * 100 - 95
+            ctx.fillStyle = "rgba(20,20,20,0.88)"
+            ctx.fillRect(tx - 10, ty - 30, tw + 20, 60)
+            ctx.strokeStyle = "#ff9100"; ctx.lineWidth = 4; ctx.strokeRect(tx - 10, ty - 30, tw + 20, 60)
+            ctx.fillStyle = "#ffe0b2"; ctx.textBaseline = "middle"
+            ctx.fillText(live.reading, tx, ty + 2)
+            ctx.restore()
+          }
+        }
+        // Where the clamp would close while choosing.
+        if (view.clipping && view.clipHover) {
+          var ch = view.clipHover.kind === "wire" ? Clamp.jawPoint(view.bench, view.routes, view.clipHover) : view.clipHover
+          ctx.strokeStyle = "#ffd600"; ctx.lineWidth = 0.12
+          ctx.beginPath(); ctx.arc(ch.x, ch.y, 0.5, 0, Math.PI * 2); ctx.stroke()
+        }
         // Wire being drawn.
         if (view.drag.kind === "wire" && view.drag.preview) {
           var pv = view.drag.preview
@@ -485,6 +572,18 @@ Item {
 
   onRoutesChanged: wiresCanvas.requestPaint()
   onSelectedWireChanged: wiresCanvas.requestPaint()
+  onClipHoverChanged: wiresCanvas.requestPaint()
+  onClippingChanged: wiresCanvas.requestPaint()
+  onRunningChanged: wiresCanvas.requestPaint()
+  // Clamp readings are painted by the jaws, so repaint when they change.
+  property string clampKey: ""
+  onResultChanged: {
+    var k = ""
+    if (result && result.parts)
+      for (var i = 0; i < bench.parts.length; i++)
+        if (bench.parts[i].type === "clampMeter") k += (result.parts[bench.parts[i].id] || {}).reading + "|"
+    if (k !== clampKey) { clampKey = k; wiresCanvas.requestPaint() }
+  }
   onCellChanged: wiresCanvas.requestPaint()
 
   // ---------------------------------------------------------------- input
@@ -525,6 +624,7 @@ Item {
   }
 
   // Scroll over a part changes its main value; anywhere else zooms.
+  readonly property var wheelTypes: ({ potentiometer: true, ldr: true, thermistor: true, tmp36: true, benchSupply: true, hcsr04: true, robotCar: true, resistor: true, capacitor: true, electrolytic: true, led: true, aaPack: true, zener: true })
   function wheelPart(part, delta) {
     var step = delta > 0 ? 1 : -1
     var pr = part.props
@@ -551,16 +651,34 @@ Item {
     anchors.fill: parent
     hoverEnabled: true
     acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-    cursorShape: view.drag.kind === "pan" ? Qt.ClosedHandCursor
+    cursorShape: view.clipping !== "" ? Qt.CrossCursor
+      : view.drag.kind === "pan" ? Qt.ClosedHandCursor
       : view.drag.kind === "seg" || view.drag.kind === "bend" || view.overWire ? Qt.SizeAllCursor
       : view.placingType !== "" ? Qt.CrossCursor
       : view.hoverPoint ? Qt.CrossCursor : Qt.ArrowCursor
 
+    // Smooth-scrolling mice send several small events per notch (120 units),
+    // so values step once per notch and zoom follows the actual amount.
+    property real wheelAcc: 0
     onWheel: function (wheel) {
+      var dy = wheel.angleDelta.y
+      if (dy === 0) return
       var g = view.toGrid(wheel.x, wheel.y)
       var p = view.partAt(g)
-      if (p && view.wheelPart(p, wheel.angleDelta.y)) { view.hoverChanged(view.describeHover(g)); return }
-      view.zoomAt(wheel.x, wheel.y, wheel.angleDelta.y > 0 ? 1.1 : 1 / 1.1)
+      if (p && view.wheelTypes[p.type]) {
+        if (wheelAcc * dy < 0) wheelAcc = 0   // changed direction
+        wheelAcc += dy
+        var moved = false
+        while (Math.abs(wheelAcc) >= 120) {
+          view.wheelPart(p, wheelAcc)
+          wheelAcc -= wheelAcc > 0 ? 120 : -120
+          moved = true
+        }
+        if (moved) view.hoverChanged(view.describeHover(g))
+        return
+      }
+      wheelAcc = 0
+      view.zoomAt(wheel.x, wheel.y, Math.pow(1.1, dy / 120))
     }
 
     onPressed: function (m) {
@@ -568,6 +686,19 @@ Item {
       var g = view.toGrid(m.x, m.y)
       if (m.button === Qt.MiddleButton || (m.button === Qt.LeftButton && (m.modifiers & Qt.ShiftModifier) && view.placingType === "")) {
         view.drag = { kind: "pan", sx: m.x, sy: m.y, ox: view.offX, oy: view.offY }
+        return
+      }
+      if (view.clipping !== "") {
+        var cp = view.partById(view.clipping)
+        var tg = m.button === Qt.LeftButton ? view.clipTarget(g) : null
+        view.clipping = ""
+        view.clipHover = null
+        if (cp && tg) {
+          cp.props.clip = tg
+          view.bump()
+          view.edited("Clip clamp")
+        }
+        view.hoverChanged(view.describeHover(g))
         return
       }
       if (m.button === Qt.RightButton) {
@@ -586,8 +717,12 @@ Item {
         view.bump()
         view.edited("Add " + Catalog.parts[part.type].name)
         view.placed()
+        if (part.type === "clampMeter") view.startClip(part.id)
         return
       }
+      // A clamp's jaw: pick it up and clip it somewhere else.
+      var jp = view.jawAt(g)
+      if (jp) { view.startClip(jp.id); return }
       // Grab an end of the selected wire to move it.
       var sw = view.selectedWire ? view.wireById(view.selectedWire) : null
       if (sw) {
@@ -722,6 +857,11 @@ Item {
         view.ghostPos = view.ghostOrigin(g)
         return
       }
+      if (view.clipping !== "") {
+        var t = view.clipTarget(g)
+        if (JSON.stringify(t) !== JSON.stringify(view.clipHover)) view.clipHover = t
+        return
+      }
       var ow = false
       for (var wi2 = 0; wi2 < view.bench.wires.length && !ow; wi2++) if (view.segmentAt(view.bench.wires[wi2], g, 0.24) >= 0) ow = true
       view.overWire = ow
@@ -754,6 +894,7 @@ Item {
           view.bump()
           view.edited("Meter mode")
         }
+        else if (p && p.type === "clampMeter") view.startClip(p.id)
       } else if (d.kind === "wireEnd" && d.moved) {
         view.edited("Move wire end")
       } else if ((d.kind === "seg" || d.kind === "bend") && d.moved) {
