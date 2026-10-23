@@ -147,5 +147,41 @@ var steps = {
     "Click the robot car and press Open robot arena. The car drives forward. The top of the Robot arena shows Sonar, L and R.",
     "Press ✕ to close the Robot arena.",
     "Scroll down on the robot car until it says 10 cm ahead. The Serial Monitor prints 10. L and R both go red, then L goes green and R stays red."
+  ],
+  acscope: [
+    "Look at the oscilloscope. The trace is a sine wave that crosses the middle line.",
+    "Scroll on the function generator until Frequency says 100 Hz. The wave gets tighter.",
+    "Click the function generator and set Wave to square. The trace gets flat tops and bottoms.",
+    "Set Wave back to sine."
+  ],
+  rectifier: [
+    "Look at the oscilloscope. The trace sits up high and barely wiggles.",
+    "Click the capacitor and delete it. The trace starts bumping up and down.",
+    "Put the 1000 µF capacitor back across the rails. The line goes almost flat again."
+  ],
+  timer555: [
+    "Watch the yellow LED. It blinks on its own, a little faster than once a second.",
+    "Click the 10 kΩ resistor and scroll down until Resistance says 1 kΩ. The blink speeds up.",
+    "Scroll that resistor back up to 10 kΩ. The blink slows down."
+  ],
+  relay: [
+    "Look at the green LED. It stays dark.",
+    "Click and hold the button. The LED lights.",
+    "Let go of the button. The LED goes dark."
+  ],
+  reg7805: [
+    "Look at the multimeter. Its screen says 5.00 V.",
+    "Look at the blue LED. It is lit.",
+    "Hover the regulator. The bottom of the bench shows about 5 V out."
+  ],
+  nano: [
+    "Watch the red LED. It stays on for about half a second, then off for about half a second.",
+    "Click the OmaNano and press Open code editor.",
+    "Change both delay(500) to delay(100) and press Upload. The LED blinks much faster."
+  ],
+  tiny: [
+    "Watch the green LED. It blinks on its own, about once a second.",
+    "Click the OmaTiny and press Open code editor.",
+    "Change both delay(500) to delay(100) and press Upload. The LED blinks much faster."
   ]
 }
