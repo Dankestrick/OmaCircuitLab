@@ -1890,6 +1890,31 @@ var hotNeg = solve([
 ], 2)
 assert.ok(Math.abs(part(hotNeg, "ac").volts - (-10 * 1000 / 1050)) < 1e-3, "offset stops at -10 V")
 
+function tooBig(result) {
+  assert.strictEqual(result.ok, false)
+  assert.ok((result.warnings || []).some(function (w) {
+    return w.message === "This circuit is too big for the simulator."
+  }), JSON.stringify(result.warnings))
+}
+tooBig(solve([
+  { id: "r", type: "resistor", nodes: [501, 0], props: { ohms: 1000 } }
+], 2))
+var series = []
+for (var si = 0; si < 251; si++) series.push({ id: "r" + si, type: "resistor", nodes: [si + 1, si], props: { ohms: 1000 } })
+tooBig(solve(series, 252))
+var packs = []
+for (var pi = 0; pi < 251; pi++) packs.push({ id: "b" + pi, type: "aaPack", nodes: [1, 0], props: { cells: 2 } })
+tooBig(solve(packs, 2))
+var crowd = []
+for (var ci = 0; ci < 2001; ci++) crowd.push({ id: "c" + ci, type: "resistor", nodes: [1, 0], props: { ohms: 1000 } })
+tooBig(solve(crowd, 2))
+var ladder = []
+for (var li = 0; li < 200; li++) ladder.push({ id: "L" + li, type: "resistor", nodes: [li + 1, li], props: { ohms: 1000 } })
+var ladderResult = solve([
+  { id: "bat", type: "battery9v", nodes: [200, 0], props: {} }
+].concat(ladder), 201)
+assert.strictEqual(ladderResult.converged, true, "a 200-resistor ladder still solves")
+
 import(pathToFileURL(path.join(__dirname, "..", "qml", "lib", "worker", "Engine.mjs")).href).then(function (mod) {
   assert.strictEqual(typeof mod.solve, "function")
   assert.strictEqual(typeof mod.createState, "function")

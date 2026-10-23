@@ -20,6 +20,13 @@ import * as Mcu from "./Mcu.mjs"
 export var GMIN = 1e-9
 export var VT = 0.02585
 export var MAX_ITERS = 100
+// A dense solve is about n³. 250 unknowns keeps one factor near the worker's
+// 25 ms budget. 500 nodes is the old cap and still stops a huge index before
+// any voltage array is built. The part cap in the UI is 400, so 2000 elements
+// only rejects a netlist that skipped that check.
+export var MAX_UNKNOWNS = 250
+export var MAX_NODES = 500
+export var MAX_ELEMENTS = 2000
 export var DIODE_IS = 1e-12
 export var DIODE_NVT = 1.9 * VT
 export var SCHOTTKY_IS = 1e-6
@@ -84,7 +91,7 @@ export function solve(netlist, state, dt) {
     if (!isFinite(dt) || dt < 0) dt = 0
     var nl = normalize(netlist)
     if (!nl) return fail("Add a circuit first.")
-    if (nl.nodeCount > 500) return fail("This circuit is too big for the simulator.")
+    if (nl.elements.length > MAX_ELEMENTS || nl.nodeCount > MAX_NODES) return fail("This circuit is too big for the simulator.")
     if (nl.ground < 0 && !isPowered(nl) && !hasOhmProbe(nl)) return unpowered(nl, state)
     syncBoards(nl, state)
 
@@ -109,6 +116,7 @@ export function solve(netlist, state, dt) {
     for (var iter = 0; iter < MAX_ITERS; iter++) {
       work.hitLimit = false
       var built = build(nl, state, v, dt, ref, work)
+      if (!built) return fail("This circuit is too big for the simulator.")
       var vNew
       if (built.n === 0) {
         vNew = zeros(nl.nodeCount)
@@ -1086,6 +1094,10 @@ export function noteRelays(nl, v, work, state) {
 export function build(nl, state, v, dt, ref, work) {
   work.irBright = benchIrBright(nl, v, state)
   var plan = sourceList(nl, v, state, work)
+  var nV = nl.nodeCount > 0 ? nl.nodeCount - 1 : 0
+  // nExtra is every voltage-source unknown. It is not part of nodeCount, so a
+  // pile of packs or board rails used to allocate past the 500-node check.
+  if (!(plan.nExtra >= 0) || plan.nExtra > MAX_UNKNOWNS || nV + plan.nExtra > MAX_UNKNOWNS) return null
   var sys = new System(nl.nodeCount, ref, plan.nExtra)
   stampGmin(sys)
   var powered = isPowered(nl)
