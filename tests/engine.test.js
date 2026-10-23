@@ -553,6 +553,79 @@ assert.strictEqual(wiped.parts.mcu.pins[13].mode, "in")
 assert.strictEqual(wiped.parts.mcu.error, "")
 assert.strictEqual(boardState.mcu.mcu.vm, null)
 
+// --- sketch time: stamp, solve, then run the VM one dt ---
+function lessonBare(id) {
+  var lesson = L.lessons.filter(function (x) { return x.id === id })[0]
+  var nl = B.buildNetlist(lesson.build())
+  return { nodeCount: nl.nodeCount, ground: nl.ground, elements: nl.elements }
+}
+function stepLesson(id, n, mutate) {
+  var lesson = L.lessons.filter(function (x) { return x.id === id })[0]
+  var bench = lesson.build()
+  if (mutate) mutate(bench)
+  var nl = B.buildNetlist(bench)
+  var bare = { nodeCount: nl.nodeCount, ground: nl.ground, elements: nl.elements }
+  var st = E.createState()
+  var result = null
+  for (var i = 0; i < n; i++) result = E.solve(bare, st, 0.001)
+  return { result: result, state: st, bare: bare }
+}
+var blinkRun = []
+var blinkBare = lessonBare("blink")
+var blinkState = E.createState()
+for (var bt = 0; bt < 1500; bt++) {
+  var br = E.solve(blinkBare, blinkState, 0.001)
+  blinkRun.push(br.parts.led.brightness > 0.2 ? 1 : 0)
+}
+var blinkRuns = []
+var blinkCur = blinkRun[0]
+var blinkN = 0
+for (var bi = 0; bi < blinkRun.length; bi++) {
+  if (blinkRun[bi] === blinkCur) blinkN++
+  else { blinkRuns.push(blinkCur + "x" + blinkN); blinkCur = blinkRun[bi]; blinkN = 1 }
+}
+blinkRuns.push(blinkCur + "x" + blinkN)
+console.log("blink runs", blinkRuns.join(" "))
+var blinkOn = 0
+var blinkOff = 0
+for (var brn = 0; brn < blinkRuns.length; brn++) {
+  var partRun = blinkRuns[brn].split("x")
+  var count = Number(partRun[1])
+  if (partRun[0] === "1" && blinkOn === 0) blinkOn = count
+  else if (partRun[0] === "0" && blinkOn > 0 && blinkOff === 0) blinkOff = count
+}
+assert.ok(blinkOn > 450 && blinkOn < 560, "LED on about 500 ms, was " + blinkOn)
+assert.ok(blinkOff > 450 && blinkOff < 560, "LED off about 500 ms, was " + blinkOff)
+assert.strictEqual(blinkState.mcu.mcu.vm.pins[13].mode, "out")
+
+var buttonUp = stepLesson("mcubutton", 5)
+var buttonDown = stepLesson("mcubutton", 5, function (bench) {
+  bench.parts.forEach(function (p) { if (p.type === "pushButton") p.props.pressed = true })
+})
+console.log("button up", buttonUp.result.parts.led.brightness.toFixed(3), "down", buttonDown.result.parts.led.brightness.toFixed(3))
+assert.ok(buttonUp.result.parts.led.brightness < 0.05, "button up keeps the LED off")
+assert.ok(buttonDown.result.parts.led.brightness > 0.2, "button down lights the LED")
+
+var McuLib = load("Mcu.js")
+var knobState = E.createState()
+var knobEl = duinoElement(McuLib.example("knob"), { 3: 4 })
+var knobNet = net([
+  knobEl,
+  { id: "pot", type: "potentiometer", nodes: [1, 4, 0], props: { ohms: 10000, turn: 0.5 } }
+], 50)
+var knobResult = null
+for (var ks = 0; ks < 5; ks++) knobResult = E.solve(knobNet, knobState, 0.001)
+console.log("knob serial", JSON.stringify(knobResult.parts.mcu.serial))
+assert.ok(/A0 = 51[0-4]/.test(knobResult.parts.mcu.serial), "analogRead near 512")
+
+var perfBare = lessonBare("blink")
+var perfState = E.createState()
+var perfT = Date.now()
+for (var ps = 0; ps < 1000; ps++) E.solve(perfBare, perfState, 0.001)
+var perfMs = Date.now() - perfT
+console.log("blink 1000 steps", perfMs, "ms")
+assert.ok(perfMs < 1000, "1000 blink steps took " + perfMs + "ms")
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.

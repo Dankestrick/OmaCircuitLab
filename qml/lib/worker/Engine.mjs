@@ -119,6 +119,7 @@ export function solve(netlist, state, dt) {
     var result = assemble(nl, state, last, dt, converged, work)
     state.nodeVolts = last.slice()
     state.nodeCount = nl.nodeCount
+    if (dt > 0) runBoards(nl, state, result, last, dt)
     return result
   } catch (err) {
     return fail("Something went wrong while simulating this circuit.")
@@ -1338,7 +1339,8 @@ export function trimNum(s) {
 
 // ---------------------------------------------------------------------------
 // OmaDuino. The VM is cached on state and only rebuilt when the sketch text
-// changes. This pass stamps the pins; the sketch itself advances in a later step.
+// changes. Each dt > 0 solve stamps the current pins, then runs the sketch
+// forward by dt. The new pin levels are what the next solve stamps.
 
 export function syncBoards(nl, state) {
   if (!state.mcu) state.mcu = {}
@@ -1497,4 +1499,51 @@ export function fillBoard(p, el, id, pv, state, v, warnings) {
   p.running = !!(slot && slot.vm && !p.error)
   p.current = i5 + i33 + iGpio
   p.power = 0
+}
+
+export function runBoards(nl, state, result, v, dt) {
+  var stepUs = Math.round(dt * 1e6)
+  if (stepUs < 1) stepUs = 1
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (el.type !== "omaduino") continue
+    var id = partId(el, i)
+    var slot = state.mcu && state.mcu[id]
+    if (!slot || !slot.vm || slot.error) continue
+    var before = slot.vm.serial ? String(slot.vm.serial) : ""
+    var map = boardMap(el)
+    slot.vm.run(slot.vm.time + stepUs, {
+      volts: function (pin) {
+        pin = pin | 0
+        if (pin < 0 || pin >= 20 || map.gnd < 0) return 0
+        var node = map.pins[pin]
+        if (node < 0) return 0
+        return nodeV(v, node) - nodeV(v, map.gnd)
+      },
+      pulseIn: function () { return 0 }
+    })
+    copyBoardRuntime(result.parts[id], slot, before)
+  }
+}
+
+export function copyBoardRuntime(part, slot, before) {
+  if (!part || !slot || !slot.vm) return
+  var srcPins = slot.vm.pins
+  var pins = []
+  for (var i = 0; i < 20; i++) {
+    var src = srcPins && srcPins[i] ? srcPins[i] : { mode: "in", level: 0, pwm: null, servo: null, tone: null }
+    pins.push({
+      mode: src.mode || "in",
+      level: src.level ? 1 : 0,
+      pwm: src.pwm === undefined ? null : src.pwm,
+      servo: src.servo === undefined ? null : src.servo,
+      tone: src.tone === undefined ? null : src.tone
+    })
+  }
+  part.pins = pins
+  part.serial = slot.vm.serial ? String(slot.vm.serial) : ""
+  part.serialActive = part.serial !== before
+  part.error = slot.vm.error || ""
+  part.errorLine = slot.vm.error ? (slot.vm.errorLine || 0) : 0
+  part.running = !part.error
 }
