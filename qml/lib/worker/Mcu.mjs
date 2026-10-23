@@ -472,11 +472,14 @@ export function runVm(vm, until, io) {
 }
 
 // Global variables: run their set-up code straight through before setup().
+// A step cap stops a global that calls a function stuck in a loop.
 export function runToEnd(vm, code) {
   var frame = { code: code, pc: 0, scope: vm.globals, stack: [], fn: null }
   var base = vm.frames.length
+  var left = STEP_BUDGET * 400
   vm.frames.push(frame)
   while (vm.frames.length > base) {
+    if (left-- <= 0) throw new RuntimeError(0, "Setting up the global variables never finishes. Is there an endless loop in a function they call?")
     var f = vm.frames[vm.frames.length - 1]
     if (f.pc >= f.code.length) { vm.frames.pop(); continue }
     var ins = f.code[f.pc++]
@@ -566,6 +569,7 @@ export function declare(vm, scope, d, st, count) {
   if (d.type === "Servo") {
     if (d.size !== null) {
       var n = vals[0]
+      if (!(n >= 0 && n <= 64)) throw new RuntimeError(d.line, "Servo array " + d.name + " is too big (keep it under 64).")
       var arr = []; for (var k = 0; k < n; k++) arr.push({ servo: true, pin: -1, angle: 90 })
       scope.vars[d.name] = { type: "Servo", value: arr, array: true }
     } else scope.vars[d.name] = { type: "Servo", value: { servo: true, pin: -1, angle: 90 } }

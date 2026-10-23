@@ -61,4 +61,17 @@ void loop() { delay(10); }`
   const f = run(M.example("fade"), 300).samples
   assert(f[299][9].pwm > 0)
 }
+// a global that calls an endless loop stops with an error instead of hanging
+{
+  const c = M.compile("int spin(){ while (1) {} return 0; } int x = spin(); void setup(){} void loop(){}")
+  assert(c.ok, JSON.stringify(c.errors))
+  const vm = M.create(c.program), t0 = Date.now(); vm.run(1000, {})
+  assert(/never finishes/.test(vm.error), vm.error)
+  assert(Date.now() - t0 < 1000, "global set-up was cut off quickly")
+}
+// a huge Servo array is refused
+{
+  const c = M.compile("#include <Servo.h>\nServo s[200000]; void setup(){} void loop(){}"); const vm = M.create(c.program); vm.run(1000, {})
+  assert(/too big/.test(vm.error), vm.error)
+}
 console.log("mcu ok")
