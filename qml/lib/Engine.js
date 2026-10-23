@@ -55,7 +55,8 @@ function createState() {
     servoAngle: {},
     scope: {},
     fuse: {},
-    indI: {}
+    indI: {},
+    relayOn: {}
   }
 }
 
@@ -64,7 +65,7 @@ function isTimeDependent(netlist) {
   if (!els) return false
   for (var i = 0; i < els.length; i++) {
     var t = els[i].type
-    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter" || t === "oscilloscope" || t === "inductor" || t === "transformer") return true
+    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter" || t === "oscilloscope" || t === "inductor" || t === "transformer" || t === "relay") return true
   }
   return false
 }
@@ -158,6 +159,7 @@ function ensureState(state) {
   if (!state.burnWhy) state.burnWhy = {}
   if (!state.fuse) state.fuse = {}
   if (!state.indI) state.indI = {}
+  if (!state.relayOn) state.relayOn = {}
   if (!state.spin) state.spin = {}
   if (!state.mcu) state.mcu = {}
   if (!state.servoAngle) state.servoAngle = {}
@@ -828,6 +830,28 @@ function noteModes(built, v, work, nl, state) {
       work.driverScale[s.id] = nowD
     }
   }
+  noteRelays(nl, v, work, state)
+}
+
+function noteRelays(nl, v, work, state) {
+  if (!state.relayOn) state.relayOn = {}
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (el.type !== "relay") continue
+    var n = pins(el, nl.nodeCount, 5)
+    if (!n) continue
+    var id = partId(el, i)
+    var coil = nodeV(v, n[0]) - nodeV(v, n[1])
+    var pull = num(el, "pullIn", 3.5)
+    var drop = num(el, "dropOut", 1.5)
+    if (!(pull > drop)) { pull = 3.5; drop = 1.5 }
+    var was = state.relayOn[id] === true
+    var now = was
+    if (coil >= pull) now = true
+    else if (coil < drop) now = false
+    if (now !== was) work.changed = true
+    state.relayOn[id] = now
+  }
 }
 
 function build(nl, state, v, dt, ref, work) {
@@ -1038,6 +1062,22 @@ function build(nl, state, v, dt, ref, work) {
       } else {
         stampG(sys, nL[0], nL[1], 1 / 0.5)
       }
+    } else if (el.type === "relay") {
+      var nK = pins(el, nl.nodeCount, 5)
+      if (!nK) continue
+      var rc = num(el, "coilOhms", 70)
+      if (!(rc > 0)) rc = 70
+      if (dt > 0) {
+        var gCoil = 1 / (rc + 0.01 / dt)
+        var iCoil = indStored(state, id) * (0.01 / dt) * gCoil
+        stampG(sys, nK[0], nK[1], gCoil)
+        stampI(sys, nK[1], nK[0], iCoil)
+      } else {
+        stampG(sys, nK[0], nK[1], 1 / rc)
+      }
+      var closed = state.relayOn[id] === true
+      stampG(sys, nK[2], nK[3], closed ? 1 / 0.05 : 1e-9)
+      stampG(sys, nK[2], nK[4], closed ? 1e-9 : 1 / 0.05)
     } else if (el.type === "capacitor" || el.type === "electrolytic") {
       var nc = pins(el, nl.nodeCount, 2)
       if (!nc) continue
@@ -1145,6 +1185,8 @@ function assemble(nl, state, v, dt, converged, work) {
       fillMos(p, pv)
     } else if (kind === "inductor") {
       fillInductor(p, el, id, pv, state, dt)
+    } else if (kind === "relay") {
+      fillRelay(p, el, id, pv, state, dt, warnings)
     } else if (kind === "transformer") {
       fillTransformer(p, el, pv)
     } else if (kind === "capacitor" || kind === "electrolytic") {
@@ -1756,6 +1798,34 @@ function stampTransformer(sys, src) {
   if (is1 >= 0) { sys.A[is1][k] -= ratio; sys.A[k][is1] -= ratio }
   if (is2 >= 0) { sys.A[is2][k] += ratio; sys.A[k][is2] += ratio }
   sys.A[k][k] -= 0.5 * ratio * ratio
+}
+
+var RELAY_SPIKE = "The relay coil spiked below -20 V when it turned off. Put a diode across the coil, stripe toward +."
+
+function fillRelay(p, el, id, pv, state, dt, warnings) {
+  var coil = (pv[0] || 0) - (pv[1] || 0)
+  var rc = num(el, "coilOhms", 70)
+  if (!(rc > 0)) rc = 70
+  var i
+  if (dt > 0) {
+    var geq = 1 / (rc + 0.01 / dt)
+    var ihist = indStored(state, id) * (0.01 / dt) * geq
+    i = geq * coil + ihist
+  } else {
+    i = coil / rc
+  }
+  p.current = i
+  p.coilV = coil
+  p.on = state.relayOn[id] === true
+  p.power = Math.abs(i * coil)
+  if (isFinite(i)) state.indI[id] = i
+  var rNo = p.on ? 0.05 : 1e9
+  var rNc = p.on ? 1e9 : 0.05
+  var vCom = pv[2] || 0
+  var iNo = (vCom - (pv[3] || 0)) / rNo
+  var iNc = (vCom - (pv[4] || 0)) / rNc
+  p.pinCurrents = [i, -i, iNo + iNc, -iNo, -iNc]
+  if (coil < -20) pushWarn(warnings, id, "warn", RELAY_SPIKE)
 }
 
 function fillInductor(p, el, id, pv, state, dt) {

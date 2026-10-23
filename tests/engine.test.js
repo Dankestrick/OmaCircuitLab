@@ -1350,6 +1350,48 @@ var xfOpen = solve([
 ], 4)
 assert.ok(Math.abs(part(xfOpen, "t").volts - 1) < 0.02, "ratio 0 means 10, open secondary " + part(xfOpen, "t").volts)
 
+// --- relay switches an LED, and the coil kicks without a diode ---
+assert.strictEqual(E.isTimeDependent(net([{ id: "k", type: "relay", nodes: [1, 0, 2, 3, 4], props: {} }], 5)), true)
+function relayLed(pressed) {
+  return net([
+    { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+    { id: "b", type: "pushButton", nodes: [1, 2], props: { pressed: pressed } },
+    { id: "k", type: "relay", nodes: [2, 0, 1, 3, 4], props: {} },
+    { id: "r", type: "resistor", nodes: [3, 5], props: { ohms: 470 } },
+    { id: "d", type: "led", nodes: [5, 0], props: { color: "green" } }
+  ], 6)
+}
+var relayOff = solve(relayLed(false).elements, 6)
+assert.strictEqual(part(relayOff, "k").on, false)
+assert.ok(part(relayOff, "d").current < 1e-4, "LED dark until the coil pulls in")
+var relayOn = solve(relayLed(true).elements, 6)
+console.log("relay", part(relayOn, "k").on, "coil", part(relayOn, "k").coilV.toFixed(2), "led", part(relayOn, "d").current.toFixed(4))
+assert.strictEqual(relayOn.converged, true)
+assert.strictEqual(part(relayOn, "k").on, true)
+assert.ok(part(relayOn, "k").coilV > 3.5)
+assert.ok(part(relayOn, "d").current > 0.005, "LED " + part(relayOn, "d").current)
+assert.strictEqual(part(relayOn, "k").pinCurrents.length, 5)
+
+function relayHold(volts) {
+  return net([
+    { id: "src", type: "benchSupply", nodes: [1, 0], props: { volts: volts, currentLimit: 1 } },
+    { id: "k", type: "relay", nodes: [1, 0, 2, 3, 4], props: {} }
+  ], 5)
+}
+var hold = E.createState()
+assert.strictEqual(part(E.solve(relayHold(4), hold, 0), "k").on, true)
+assert.strictEqual(part(E.solve(relayHold(2), hold, 0), "k").on, true, "stays on between drop-out and pull-in")
+assert.strictEqual(part(E.solve(relayHold(1), hold, 0), "k").on, false)
+
+var kick = E.createState()
+E.solve(relayLed(true), kick, 0)
+var spiked = E.solve(relayLed(false), kick, 5e-5)
+console.log("kick", part(spiked, "k").coilV.toFixed(1), "on", part(spiked, "k").on)
+assert.ok(part(spiked, "k").coilV < -20, "flyback " + part(spiked, "k").coilV)
+assert.ok((spiked.warnings || []).some(function (w) {
+  return w.part === "k" && w.message === "The relay coil spiked below -20 V when it turned off. Put a diode across the coil, stripe toward +."
+}), "flyback warning")
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.
