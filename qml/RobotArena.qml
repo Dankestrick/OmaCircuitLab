@@ -35,6 +35,7 @@ Rectangle {
       Layout.fillWidth: true
       spacing: Style.spacing.md
       Text {
+        textFormat: Text.PlainText
         text: "Robot arena"
         color: "#ffffff"
         font.family: root.theme.fontFamily
@@ -42,6 +43,7 @@ Rectangle {
         font.bold: true
       }
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         text: root.arenaState ? "Sonar " + Math.round(root.arenaState.distance) + " cm · L " + Math.round(root.leftSpin * 100) + "% · R " + Math.round(root.rightSpin * 100) + "%" + (root.arenaState.bumped ? " · bump!" : "") : ""
         color: root.arenaState && root.arenaState.bumped ? "#ffab91" : "#b0bec5"
@@ -110,6 +112,7 @@ Rectangle {
       }
     }
     Text {
+      textFormat: Text.PlainText
       Layout.fillWidth: true
       wrapMode: Text.WordWrap
       text: root.running ? "Room is 3 m × 2 m. The blue line is what the sonar sees." : "Press Run to start the robot. Load the Wall-dodging robot example on the board."

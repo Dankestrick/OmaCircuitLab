@@ -85,6 +85,7 @@ Item {
     color: root.warning === "danger" ? "#ff3d00" : "#ffb300"
     border.color: "#1a1a1a"; border.width: 1
     Text {
+      textFormat: Text.PlainText
       anchors.centerIn: parent
       text: "!"
       color: "#1a1a1a"

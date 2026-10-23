@@ -60,6 +60,7 @@ Flickable {
       // Long names (HC-SR04, function generator) wrap, so they can't widen
       // the column and push the readings off the right edge.
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         wrapMode: Text.WordWrap
         text: root.def ? root.def.name : ""
@@ -69,6 +70,7 @@ Flickable {
         font.bold: true
       }
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         text: root.def ? root.def.tip : ""
         wrapMode: Text.WordWrap
@@ -95,6 +97,7 @@ Flickable {
         onClicked: root.openCode(root.part.id)
       }
       Text {
+        textFormat: Text.PlainText
         visible: root.part !== null && Catalog.mcuTypes[root.part.type] === true
         Layout.fillWidth: true
         wrapMode: Text.WordWrap
@@ -106,6 +109,7 @@ Flickable {
 
       // Legs
       Text {
+        textFormat: Text.PlainText
         text: "Legs"
         color: root.theme.muted
         font.family: root.theme.fontFamily
@@ -119,6 +123,7 @@ Flickable {
           required property int index
           Layout.fillWidth: true
           Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: "• " + modelData.name
             color: root.theme.fg
@@ -126,6 +131,7 @@ Flickable {
             font.pixelSize: root.theme.fSmall
           }
           Text {
+            textFormat: Text.PlainText
             visible: root.live !== null && root.live.pinVolts !== undefined
             text: root.live && root.live.pinVolts ? root.fmt(root.live.pinVolts[index] || 0, "V") : ""
             color: root.theme.accent
@@ -149,6 +155,7 @@ Flickable {
           RowLayout {
             Layout.fillWidth: true
             Text {
+              textFormat: Text.PlainText
               Layout.fillWidth: true
               text: editor.modelData.label
               color: root.theme.muted
@@ -157,6 +164,7 @@ Flickable {
               font.bold: true
             }
             Text {
+              textFormat: Text.PlainText
               text: editor.current !== null ? root.propText(editor.modelData, editor.current) : ""
               color: root.theme.fg
               font.family: root.theme.fontFamily
@@ -211,6 +219,7 @@ Flickable {
           anchors.margins: Style.spacing.md
           spacing: Style.spacing.xs
           Text {
+            textFormat: Text.PlainText
             text: "Live"
             color: root.theme.muted
             font.family: root.theme.fontFamily
@@ -237,6 +246,7 @@ Flickable {
               required property var modelData
               Layout.fillWidth: true
               Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: modelData[0]
                 color: root.theme.fg
@@ -244,6 +254,7 @@ Flickable {
                 font.pixelSize: root.theme.fSmall
               }
               Text {
+                textFormat: Text.PlainText
                 text: modelData[1]
                 color: root.theme.accent
                 font.family: root.theme.fontFamily
@@ -269,6 +280,7 @@ Flickable {
       Layout.fillWidth: true
       spacing: Style.spacing.md
       Text {
+        textFormat: Text.PlainText
         text: "Jumper wire"
         color: root.theme.fg
         font.family: root.theme.fontFamily
@@ -276,6 +288,7 @@ Flickable {
         font.bold: true
       }
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         wrapMode: Text.WordWrap
         text: "Drag a straight run (blue bar) to slide it, or a bend (white square) to move the corner. Drag either end (blue ring) to plug it in somewhere else. Pick a color on the left to recolor it. Delete removes it.\n\nWire colors don't change how a circuit works, but a habit of red for + and black for − makes circuits much easier to follow."
@@ -297,6 +310,7 @@ Flickable {
       Layout.fillWidth: true
       spacing: Style.spacing.md
       Text {
+        textFormat: Text.PlainText
         text: "Your circuit"
         color: root.theme.fg
         font.family: root.theme.fontFamily
@@ -304,6 +318,7 @@ Flickable {
         font.bold: true
       }
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         wrapMode: Text.WordWrap
         text: {
@@ -325,6 +340,7 @@ Flickable {
           return out
         }
         delegate: Text {
+          textFormat: Text.PlainText
           required property var modelData
           Layout.fillWidth: true
           wrapMode: Text.WordWrap
@@ -336,6 +352,7 @@ Flickable {
       }
       // How it's connected: every node, its voltage and the legs on it.
       Text {
+        textFormat: Text.PlainText
         visible: netRepeater.count > 0
         Layout.topMargin: Style.spacing.md
         text: "How it's connected"
@@ -345,6 +362,7 @@ Flickable {
         font.bold: true
       }
       Text {
+        textFormat: Text.PlainText
         visible: netRepeater.count > 0
         Layout.fillWidth: true
         wrapMode: Text.WordWrap
@@ -374,6 +392,7 @@ Flickable {
             RowLayout {
               Layout.fillWidth: true
               Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: modelData.node === 0 && root.netlist.ground === 0 ? "Ground (0 V reference)" : "Point " + modelData.node
                 color: root.theme.fg
@@ -382,6 +401,7 @@ Flickable {
                 font.bold: true
               }
               Text {
+                textFormat: Text.PlainText
                 visible: root.running && root.result && root.result.nodeVolts !== undefined
                 text: root.running && root.result && root.result.nodeVolts ? root.fmt(root.result.nodeVolts[modelData.node] || 0, "V") : ""
                 color: root.theme.accent
@@ -393,6 +413,7 @@ Flickable {
             Repeater {
               model: modelData.legs
               delegate: Text {
+                textFormat: Text.PlainText
                 required property var modelData
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap

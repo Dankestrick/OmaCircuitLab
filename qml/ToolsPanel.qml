@@ -114,6 +114,7 @@ Flickable {
               border.color: "#000000"; border.width: 1
             }
             Text {
+              textFormat: Text.PlainText
               width: Style.space(52)
               horizontalAlignment: Text.AlignHCenter
               text: modelData < 0 ? "Gold" : Learn.bandLabel[modelData]
@@ -196,6 +197,7 @@ Flickable {
         Layout.fillWidth: true
         spacing: 2
         Text {
+          textFormat: Text.PlainText
           text: modelData[0]
           color: root.theme.accent
           font.family: root.theme.fontFamily
@@ -209,6 +211,7 @@ Flickable {
 
   // ------------------------------------------------ pieces
   component Para: Text {
+    textFormat: Text.PlainText
     Layout.fillWidth: true
     wrapMode: Text.WordWrap
     color: root.theme.fg
@@ -226,6 +229,7 @@ Flickable {
     color: Qt.rgba(0, 0, 0, 0.3)
     border.color: root.theme.accent
     Text {
+      textFormat: Text.PlainText
       id: answerText
       anchors.fill: parent
       anchors.margins: Style.spacing.lg
@@ -244,6 +248,7 @@ Flickable {
     Layout.fillWidth: true
     spacing: 2
     Text {
+      textFormat: Text.PlainText
       text: parent.label
       color: root.theme.muted
       font.family: root.theme.fontFamily
@@ -266,6 +271,7 @@ Flickable {
     Layout.fillWidth: true
     spacing: 2
     Text {
+      textFormat: Text.PlainText
       text: parent.label
       color: root.theme.muted
       font.family: root.theme.fontFamily

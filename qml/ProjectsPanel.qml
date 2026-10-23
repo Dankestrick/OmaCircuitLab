@@ -41,6 +41,7 @@ Rectangle {
     RowLayout {
       Layout.fillWidth: true
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         text: "My circuits"
         color: "#ffffff"
@@ -74,6 +75,7 @@ Rectangle {
     }
 
     Text {
+      textFormat: Text.PlainText
       visible: root.names.length === 0
       text: "Nothing saved yet. Your current bench always saves itself too."
       color: "#90a4ae"
@@ -92,6 +94,7 @@ Rectangle {
         Column {
           Layout.fillWidth: true
           Text {
+            textFormat: Text.PlainText
             text: modelData
             color: "#ffffff"
             elide: Text.ElideRight
@@ -101,6 +104,7 @@ Rectangle {
             font.bold: true
           }
           Text {
+            textFormat: Text.PlainText
             text: {
               var p = root.projects[modelData]
               var n = p && p.bench ? p.bench.parts.length + " parts · " + p.bench.wires.length + " wires" : ""

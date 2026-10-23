@@ -335,11 +335,14 @@ Item {
     printErrors: false
     onLoaded: {
       try {
-        var data = JSON.parse(text())
-        var clean = ({})
+        var t = text()
+        if (t.length > root.maxSavedChars) throw "too big"
+        var data = JSON.parse(t)
+        var clean = ({}), count = 0
         for (var k in data.projects) {
+          if (++count > 200) break
           var p = data.projects[k]
-          if (p && p.bench && Array.isArray(p.bench.parts)) clean[String(k).substring(0, 80)] = { bench: root.sanitize(p.bench), saved: String(p.saved || "") }
+          if (p && p.bench && Array.isArray(p.bench.parts)) clean[String(k).substring(0, 80)] = { bench: root.sanitize(p.bench), saved: String(p.saved || "").substring(0, 40) }
         }
         root.projects = clean
       } catch (e) { root.projects = ({}) }
@@ -406,14 +409,14 @@ Item {
     if (loadedOnce) return
     loadedOnce = true
     var data = null
-    try { data = text ? JSON.parse(text) : null } catch (e) { data = null }
+    try { data = text && text.length <= maxSavedChars ? JSON.parse(text) : null } catch (e) { data = null }
     if (data && data.bench && Array.isArray(data.bench.parts)) {
       bench = sanitize(data.bench)
       if (data.settings) {
         if (["solid", "theme", "custom"].indexOf(data.settings.opacityMode) >= 0) opacityMode = data.settings.opacityMode
         soundOn = data.settings.soundOn === true
         if (typeof data.settings.customOpacity === "number") customOpacity = Math.max(0.5, Math.min(1, data.settings.customOpacity))
-        if (typeof data.settings.wireColor === "string") wireColor = data.settings.wireColor
+        if (Catalog.wireColors.some(function (c) { return c.id === data.settings.wireColor })) wireColor = data.settings.wireColor
         if (typeof data.settings.lessonIndex === "number") lessonIndex = Math.max(0, Math.min(Lessons.lessons.length - 1, data.settings.lessonIndex))
       }
     } else {
@@ -427,22 +430,35 @@ Item {
   }
 
   // Only keep parts and wires we understand, so a hand-edited file can't break the window.
+  // Saved files are re-checked on load: known part types and props only, finite
+  // numbers, bounded counts and string lengths, known wire colors.
+  readonly property int maxParts: 400
+  readonly property int maxWires: 1200
+  readonly property int maxSavedChars: 8 * 1024 * 1024
   function sanitize(b) {
-    var out = { parts: [], wires: [] }
-    for (var i = 0; i < b.parts.length; i++) {
+    var out = { parts: [], wires: [], boards: Math.max(1, Math.min(Bench.MAX_BOARDS, Math.round(Number(b.boards) || 1))) }
+    var colors = Catalog.wireColors.map(function (c) { return c.id })
+    function num(v) { v = Number(v); return isFinite(v) ? Math.max(-1e7, Math.min(1e7, v)) : 0 }
+    for (var i = 0; i < b.parts.length && out.parts.length < maxParts; i++) {
       var p = b.parts[i]
-      if (!p || !Catalog.parts[p.type]) continue
+      if (!p || typeof p.type !== "string" || !Catalog.parts.hasOwnProperty(p.type)) continue
       var props = Catalog.defaults(p.type)
-      for (var k in props) if (p.props && typeof p.props[k] === typeof props[k]) props[k] = p.props[k]
-      out.parts.push({ id: String(p.id), type: p.type, x: Math.round(Number(p.x) || 0), y: Math.round(Number(p.y) || 0), rot: ((Math.round(Number(p.rot) || 0) % 4) + 4) % 4, props: props })
+      for (var k in props) {
+        if (!p.props || typeof p.props[k] !== typeof props[k]) continue
+        var v = p.props[k]
+        if (typeof v === "number") { if (isFinite(v)) props[k] = v }
+        else if (typeof v === "string") props[k] = v.substring(0, 65536)
+        else props[k] = v
+      }
+      out.parts.push({ id: String(p.id).substring(0, 40), type: p.type, x: Math.round(num(p.x)), y: Math.round(num(p.y)), rot: ((Math.round(num(p.rot)) % 4) + 4) % 4, props: props })
     }
-    if (Array.isArray(b.wires)) for (var j = 0; j < b.wires.length; j++) {
+    if (Array.isArray(b.wires)) for (var j = 0; j < b.wires.length && out.wires.length < maxWires; j++) {
       var w = b.wires[j]
       if (!w || !w.a || !w.b) continue
-      var nw = { id: String(w.id), a: { x: Math.round(Number(w.a.x) || 0), y: Math.round(Number(w.a.y) || 0) }, b: { x: Math.round(Number(w.b.x) || 0), y: Math.round(Number(w.b.y) || 0) }, color: String(w.color || "blue") }
+      var nw = { id: String(w.id).substring(0, 40), a: { x: Math.round(num(w.a.x)), y: Math.round(num(w.a.y)) }, b: { x: Math.round(num(w.b.x)), y: Math.round(num(w.b.y)) }, color: colors.indexOf(w.color) >= 0 ? w.color : "blue" }
       // A hand-shaped path: half-step points only (the router checks it still fits).
       if (Array.isArray(w.path) && w.path.length >= 2 && w.path.length <= 64)
-        nw.path = w.path.map(function (q) { return { x: Math.round(Number(q.x) * 2) / 2 || 0, y: Math.round(Number(q.y) * 2) / 2 || 0 } })
+        nw.path = w.path.map(function (q) { return { x: Math.round(num(q && q.x) * 2) / 2, y: Math.round(num(q && q.y) * 2) / 2 } })
       out.wires.push(nw)
     }
     return out
@@ -626,6 +642,7 @@ Item {
           spacing: Style.spacing.lg
 
           Text {
+            textFormat: Text.PlainText
             text: "OmaCircuitLab"
             color: root.fg
             font.family: root.fontFamily
@@ -633,6 +650,7 @@ Item {
             font.bold: true
           }
           Text {
+            textFormat: Text.PlainText
             text: root.running ? (root.result && root.result.ok === false ? "Can't solve this circuit" : "Running") : "Stopped: press Run (Space)"
             color: root.running ? root.accent : root.muted
             font.family: root.fontFamily
@@ -658,6 +676,7 @@ Item {
           Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: Style.spacing.controlHeight; color: root.lineColor }
 
           Text {
+            textFormat: Text.PlainText
             text: "Window"
             color: root.muted
             font.family: root.fontFamily
@@ -711,6 +730,7 @@ Item {
                 Layout.fillWidth: true
                 spacing: Style.spacing.sm
                 Text {
+                  textFormat: Text.PlainText
                   Layout.fillWidth: true
                   text: "Breadboards"
                   color: root.fg
@@ -720,6 +740,7 @@ Item {
                 }
                 ToolButton { label: "−"; tip: "Remove the last breadboard"; enabledLook: benchView.boards > 1; onClicked: root.changeBoards(-1) }
                 Text {
+                  textFormat: Text.PlainText
                   text: String(benchView.boards)
                   color: root.fg
                   font.family: root.fontFamily
@@ -730,6 +751,7 @@ Item {
               }
 
               Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: "Click a part, then click the bench to drop it. R turns it, right-click a placed part to turn it."
                 wrapMode: Text.WordWrap
@@ -774,6 +796,7 @@ Item {
                         anchors.margins: Style.spacing.md
                         spacing: 2
                         Text {
+                          textFormat: Text.PlainText
                           text: modelData.name
                           color: tile.active ? root.textOn(root.accent) : root.fg
                           font.family: root.fontFamily
@@ -781,6 +804,7 @@ Item {
                           font.bold: true
                         }
                         Text {
+                          textFormat: Text.PlainText
                           width: parent.width
                           text: Catalog.parts[modelData.id].tip.split(". ")[0] + "."
                           wrapMode: Text.WordWrap
@@ -817,6 +841,7 @@ Item {
                   width: parent.width
                   spacing: Style.spacing.xs
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     text: root.hoverInfo ? root.hoverInfo.title : "Notes"
                     color: root.fg
@@ -826,6 +851,7 @@ Item {
                     font.bold: true
                   }
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     text: root.hoverInfo ? root.hoverInfo.body : "Point at a part, wire or hole to learn about it here."
                     color: root.muted
@@ -838,6 +864,7 @@ Item {
 
               SectionTitle { text: "Wire color" }
               Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: "Drag from any hole to another to add a wire. Keys 1–8 pick a color."
                 wrapMode: Text.WordWrap
@@ -978,6 +1005,7 @@ Item {
               color: "#1b5e20"
               z: 6
               Text {
+                textFormat: Text.PlainText
                 id: toastLabel
                 anchors.centerIn: parent
                 text: root.toastText
@@ -1011,6 +1039,7 @@ Item {
               border.width: 1
               z: 4
               Text {
+                textFormat: Text.PlainText
                 id: statsText
                 anchors.centerIn: parent
                 text: parent.line
@@ -1037,6 +1066,7 @@ Item {
                   radius: Style.cornerRadius
                   color: modelData.level === "danger" ? "#b71c1c" : "#8d6e00"
                   Text {
+                    textFormat: Text.PlainText
                     id: warnText
                     anchors.fill: parent
                     anchors.margins: Style.spacing.md
@@ -1052,6 +1082,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText
               anchors.right: parent.right
               anchors.bottom: parent.bottom
               anchors.margins: Style.spacing.md
@@ -1155,6 +1186,7 @@ Item {
   }
 
   component SectionTitle: Text {
+    textFormat: Text.PlainText
     color: root.fg
     font.family: root.fontFamily
     font.pixelSize: root.fBody
@@ -1177,6 +1209,7 @@ Item {
     border.width: 1
     opacity: enabledLook ? 1 : 0.4
     Text {
+      textFormat: Text.PlainText
       id: tbText
       anchors.centerIn: parent
       text: tb.label

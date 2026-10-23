@@ -48,6 +48,7 @@ Flickable {
     }
 
     Text {
+      textFormat: Text.PlainText
       Layout.fillWidth: true
       text: root.lesson ? root.lesson.title : ""
       color: root.theme.fg
@@ -58,6 +59,7 @@ Flickable {
     }
 
     Text {
+      textFormat: Text.PlainText
       Layout.fillWidth: true
       text: root.lesson ? root.lesson.idea : ""
       wrapMode: Text.WordWrap
@@ -70,6 +72,7 @@ Flickable {
 
     // The short plan, then every step spelled out.
     Text {
+      textFormat: Text.PlainText
       Layout.fillWidth: true
       visible: root.lesson !== null && root.lesson.steps.length > 0 && root.tryIt.length === 0
       text: root.lesson ? "In short: " + root.lesson.steps.join(" ") : ""
@@ -83,6 +86,7 @@ Flickable {
       Layout.fillWidth: true
       Layout.topMargin: Style.spacing.sm
       Text {
+        textFormat: Text.PlainText
         text: "Step by step"
         color: root.theme.fg
         font.family: root.theme.fontFamily
@@ -91,6 +95,7 @@ Flickable {
       }
       Item { Layout.fillWidth: true }
       Text {
+        textFormat: Text.PlainText
         text: root.doneCount + " of " + root.steps.length + " done"
         color: root.doneCount === root.steps.length && root.steps.length > 0 ? "#66bb6a" : root.theme.muted
         font.family: root.theme.fontFamily
@@ -114,6 +119,7 @@ Flickable {
     }
 
     Text {
+      textFormat: Text.PlainText
       Layout.fillWidth: true
       text: "Point at a step to see where it goes on the bench. Steps tick themselves off as you build."
       wrapMode: Text.WordWrap
@@ -153,6 +159,7 @@ Flickable {
             border.color: stepRow.isDone ? "#66bb6a" : root.theme.accent
             border.width: 1
             Text {
+              textFormat: Text.PlainText
               anchors.centerIn: parent
               text: stepRow.isDone ? "✓" : String(stepRow.index + 1)
               color: stepRow.isDone || stepRow.isCurrent ? "#ffffff" : root.theme.fg
@@ -162,6 +169,7 @@ Flickable {
             }
           }
           Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: stepRow.modelData.text
             wrapMode: Text.WordWrap
@@ -182,6 +190,7 @@ Flickable {
     }
 
     Text {
+      textFormat: Text.PlainText
       visible: root.tryIt.length > 0
       Layout.topMargin: Style.spacing.md
       text: "Try it"
@@ -199,6 +208,7 @@ Flickable {
         Layout.fillWidth: true
         spacing: Style.spacing.md
         Text {
+          textFormat: Text.PlainText
           Layout.alignment: Qt.AlignTop
           text: "▸"
           color: root.theme.accent
@@ -207,6 +217,7 @@ Flickable {
           font.bold: true
         }
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: modelData
           wrapMode: Text.WordWrap
@@ -225,6 +236,7 @@ Flickable {
       color: root.status.done ? "#1b5e20" : Qt.rgba(0, 0, 0, 0.28)
       border.color: root.status.done ? "#66bb6a" : root.theme.lineColor
       Text {
+        textFormat: Text.PlainText
         id: statusText
         anchors.fill: parent
         anchors.margins: Style.spacing.lg
@@ -263,6 +275,7 @@ Flickable {
     }
 
     Text {
+      textFormat: Text.PlainText
       Layout.fillWidth: true
       Layout.topMargin: Style.spacing.lg
       wrapMode: Text.WordWrap

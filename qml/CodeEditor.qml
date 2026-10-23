@@ -57,6 +57,7 @@ Rectangle {
       Layout.fillWidth: true
       spacing: Style.spacing.md
       Text {
+        textFormat: Text.PlainText
         text: "OmaDuino code"
         color: "#ffffff"
         font.family: root.theme.fontFamily
@@ -96,6 +97,7 @@ Rectangle {
     }
 
     Text {
+      textFormat: Text.PlainText
       Layout.fillWidth: true
       text: root.status
       wrapMode: Text.WordWrap
@@ -127,6 +129,7 @@ Rectangle {
             Repeater {
               model: editor.lineCount
               delegate: Text {
+                textFormat: Text.PlainText
                 required property int index
                 width: gutter.width - Style.spacing.md
                 horizontalAlignment: Text.AlignRight
@@ -140,6 +143,7 @@ Rectangle {
             }
           }
           TextArea {
+            textFormat: TextEdit.PlainText
             id: editor
             width: parent.width - gutter.width
             wrapMode: TextEdit.NoWrap
@@ -181,6 +185,7 @@ Rectangle {
         radius: Style.cornerRadius
         color: "#4a1414"
         Text {
+          textFormat: Text.PlainText
           id: errText
           anchors.fill: parent
           anchors.margins: Style.spacing.md
@@ -201,6 +206,7 @@ Rectangle {
       radius: Style.cornerRadius
       color: "#4a1414"
       Text {
+        textFormat: Text.PlainText
         id: rtText
         anchors.fill: parent
         anchors.margins: Style.spacing.md
@@ -214,6 +220,7 @@ Rectangle {
 
     // Serial Monitor.
     Text {
+      textFormat: Text.PlainText
       text: "Serial Monitor"
       color: "#b0bec5"
       font.family: root.theme.fontFamily
@@ -228,6 +235,7 @@ Rectangle {
       border.color: "#2c3239"
       clip: true
       Text {
+        textFormat: Text.PlainText
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
