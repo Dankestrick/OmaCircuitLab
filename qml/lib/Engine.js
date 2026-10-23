@@ -22,6 +22,14 @@ var VT = 0.02585
 var MAX_ITERS = 100
 var DIODE_IS = 1e-12
 var DIODE_NVT = 1.9 * VT
+var SCHOTTKY_IS = 1e-6
+var SCHOTTKY_NVT = 1.05 * VT
+var FUSE_R = 0.1
+var FUSE_HOLD = 0.05
+var IR_VF = 1.2
+var IR_IMAX = 0.05
+var PHOTO_I = 50e-6
+var FUSE_MSG = "The fuse blew: too much current. Fix the short, then press Reset."
 var BJT_IS = 1e-14
 var BJT_BR = 5
 var LED_NVT = 0.05
@@ -45,7 +53,8 @@ function createState() {
     nodeCount: -1,
     mcu: {},
     servoAngle: {},
-    scope: {}
+    scope: {},
+    fuse: {}
   }
 }
 
@@ -146,6 +155,7 @@ function ensureState(state) {
   if (!state.capV) state.capV = {}
   if (!state.burnt) state.burnt = {}
   if (!state.burnWhy) state.burnWhy = {}
+  if (!state.fuse) state.fuse = {}
   if (!state.spin) state.spin = {}
   if (!state.mcu) state.mcu = {}
   if (!state.servoAngle) state.servoAngle = {}
@@ -812,6 +822,7 @@ function noteModes(built, v, work, nl, state) {
 }
 
 function build(nl, state, v, dt, ref, work) {
+  work.irBright = benchIrBright(nl, v, state)
   var plan = sourceList(nl, v, state, work)
   var sys = new System(nl.nodeCount, ref, plan.nExtra)
   stampGmin(sys)
@@ -851,9 +862,9 @@ function build(nl, state, v, dt, ref, work) {
     }
     if (src) sources.push(src)
 
-    if (state.burnt[id] && (el.type === "led" || el.type === "rgbLed" || el.type === "electrolytic")) continue
+    if (state.burnt[id] && (el.type === "led" || el.type === "rgbLed" || el.type === "electrolytic" || el.type === "irLed" || el.type === "fuse")) continue
 
-    if (el.type === "resistor" || el.type === "ldr" || el.type === "thermistor" || el.type === "pushButton" || el.type === "buzzer" || el.type === "motor") {
+    if (el.type === "resistor" || el.type === "ldr" || el.type === "thermistor" || el.type === "pushButton" || el.type === "tiltSwitch" || el.type === "buzzer" || el.type === "motor" || el.type === "fuse") {
       var n2 = pins(el, nl.nodeCount, 2)
       if (!n2) continue
       var r = twoTermR(el)
@@ -916,6 +927,32 @@ function build(nl, state, v, dt, ref, work) {
         var vdr = limitJunction(work, id + ":" + colors[c], nodeV(v, anodes[c]) - nodeV(v, nr[1]), rp.vf + 0.45, -5, rp.nVt, rp.is)
         stampDiode(sys, anodes[c], nr[1], vdr, rp.is, rp.nVt)
       }
+    } else if (el.type === "schottky") {
+      var nsk = pins(el, nl.nodeCount, 2)
+      if (!nsk) continue
+      var vdSk = limitJunction(work, id, nodeV(v, nsk[0]) - nodeV(v, nsk[1]), 1.5, -20, SCHOTTKY_NVT, SCHOTTKY_IS)
+      stampDiode(sys, nsk[0], nsk[1], vdSk, SCHOTTKY_IS, SCHOTTKY_NVT)
+    } else if (el.type === "bridgeRectifier") {
+      var nbr = pins(el, nl.nodeCount, 4)
+      if (!nbr) continue
+      // ~1→+, ~2→+, −→~1, −→~2.
+      stampDiode(sys, nbr[0], nbr[2], limitJunction(work, id + ":a", nodeV(v, nbr[0]) - nodeV(v, nbr[2]), 1.5, -20, DIODE_NVT, DIODE_IS), DIODE_IS, DIODE_NVT)
+      stampDiode(sys, nbr[1], nbr[2], limitJunction(work, id + ":b", nodeV(v, nbr[1]) - nodeV(v, nbr[2]), 1.5, -20, DIODE_NVT, DIODE_IS), DIODE_IS, DIODE_NVT)
+      stampDiode(sys, nbr[3], nbr[0], limitJunction(work, id + ":c", nodeV(v, nbr[3]) - nodeV(v, nbr[0]), 1.5, -20, DIODE_NVT, DIODE_IS), DIODE_IS, DIODE_NVT)
+      stampDiode(sys, nbr[3], nbr[1], limitJunction(work, id + ":d", nodeV(v, nbr[3]) - nodeV(v, nbr[1]), 1.5, -20, DIODE_NVT, DIODE_IS), DIODE_IS, DIODE_NVT)
+    } else if (el.type === "irLed") {
+      var nir = pins(el, nl.nodeCount, 2)
+      if (!nir) continue
+      var irp = irLedParams()
+      var vdir = limitJunction(work, id, nodeV(v, nir[0]) - nodeV(v, nir[1]), irp.vf + 0.45, -5, irp.nVt, irp.is)
+      stampDiode(sys, nir[0], nir[1], vdir, irp.is, irp.nVt)
+    } else if (el.type === "photodiode") {
+      var nph = pins(el, nl.nodeCount, 2)
+      if (!nph) continue
+      var vdph = limitJunction(work, id, nodeV(v, nph[0]) - nodeV(v, nph[1]), 1.5, -20, DIODE_NVT, DIODE_IS)
+      stampDiode(sys, nph[0], nph[1], vdph, DIODE_IS, DIODE_NVT)
+      // Photocurrent leaves the anode into the circuit.
+      stampI(sys, nph[0], nph[1], PHOTO_I * photoLight(el, work))
     } else if (el.type === "diode" || el.type === "zener") {
       var nz = pins(el, nl.nodeCount, 2)
       if (!nz) continue
@@ -1016,6 +1053,8 @@ function stampZener(sys, anode, cathode, vd, vz) {
 
 function twoTermR(el) {
   if (el.type === "pushButton") return (el.props && (el.props.pressed === true || el.props.pressed === 1)) ? 0.05 : 1e9
+  if (el.type === "tiltSwitch") return (el.props && (el.props.tilted === true || el.props.tilted === 1)) ? 0.05 : 1e9
+  if (el.type === "fuse") return FUSE_R
   if (el.type === "ldr") return ldrOhms(num(el, "light", 0.5))
   if (el.type === "thermistor") return ntcOhms(num(el, "celsius", 25))
   if (el.type === "buzzer") return 200
@@ -1029,6 +1068,7 @@ function twoTermR(el) {
 // Results
 
 function assemble(nl, state, v, dt, converged, work) {
+  work.irBright = benchIrBright(nl, v, state)
   var warnings = []
   var parts = {}
   if (!converged) pushWarn(warnings, "", "warn", "This circuit didn't settle. Look for a short, or a part in backwards.")
@@ -1046,8 +1086,18 @@ function assemble(nl, state, v, dt, converged, work) {
       fillAc(p, el, pv, work)
     } else if (kind === "oscilloscope") {
       fillScope(p, el, id, pv, state, work)
-    } else if (kind === "resistor" || kind === "ldr" || kind === "thermistor" || kind === "pushButton" || kind === "buzzer" || kind === "motor") {
+    } else if (kind === "resistor" || kind === "ldr" || kind === "thermistor" || kind === "pushButton" || kind === "tiltSwitch" || kind === "buzzer" || kind === "motor") {
       fillR(p, el, id, pv, state, nl, warnings)
+    } else if (kind === "fuse") {
+      fillFuse(p, el, id, pv, state, dt, warnings)
+    } else if (kind === "schottky") {
+      fillSchottky(p, pv)
+    } else if (kind === "bridgeRectifier") {
+      fillBridge(p, pv)
+    } else if (kind === "irLed") {
+      fillIrLed(p, el, id, pv, state, warnings)
+    } else if (kind === "photodiode") {
+      fillPhoto(p, el, pv, work)
     } else if (kind === "slideSwitch") {
       fillSwitch(p, el, pv)
     } else if (kind === "potentiometer") {
@@ -1458,6 +1508,127 @@ function fillRgb(p, el, id, pv, state, warnings) {
   p.burnt = burnt
   p.pinCurrents = [iAn[0], -(iAn[0] + iAn[1] + iAn[2]), iAn[1], iAn[2]]
   if (burnt) pushWarn(warnings, id, "warn", "This LED burned out from too much current. Add a resistor on each color, then press Reset.")
+}
+
+function irLedParams() {
+  var is = LED_INOM / (Math.exp(IR_VF / LED_NVT) - 1)
+  return { vf: IR_VF, is: is, nVt: LED_NVT }
+}
+
+function benchIrBright(nl, v, state) {
+  var maxB = 0
+  var lp = irLedParams()
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (el.type !== "irLed") continue
+    if (state.burnt[partId(el, i)]) continue
+    var n = pins(el, nl.nodeCount, 2)
+    if (!n) continue
+    var vd = nodeV(v, n[0]) - nodeV(v, n[1])
+    var s = shockley(clamp(vd, -5, lp.vf + 0.45), lp.is, lp.nVt)
+    var b = s.id / LED_INOM
+    if (b > maxB) maxB = b
+  }
+  if (maxB < 0) maxB = 0
+  if (maxB > 1) maxB = 1
+  return maxB
+}
+
+function photoLight(el, work) {
+  var light = num(el, "light", 0.5)
+  if (!(light >= 0)) light = 0
+  if (light > 1) light = 1
+  var extra = work && work.irBright ? 0.5 * work.irBright : 0
+  return light + extra
+}
+
+function fillFuse(p, el, id, pv, state, dt, warnings) {
+  var v0 = pv[0] || 0
+  var v1 = pv[1] || 0
+  if (state.burnt[id]) {
+    p.current = 0
+    p.power = 0
+    p.burnt = true
+    pushWarn(warnings, id, "warn", FUSE_MSG)
+    return
+  }
+  var i = (v0 - v1) / FUSE_R
+  p.current = i
+  p.power = Math.abs(i * (v0 - v1))
+  p.burnt = false
+  var amps = num(el, "amps", 0.5)
+  if (!(amps > 0)) amps = 0.5
+  var absI = Math.abs(i)
+  if (dt > 0 && absI > amps) state.fuse[id] = (state.fuse[id] || 0) + dt
+  var held = (state.fuse[id] || 0) > FUSE_HOLD
+  if (absI >= amps * 3 || (dt > 0 && held)) {
+    state.burnt[id] = true
+    state.burnWhy[id] = "fuse"
+    p.burnt = true
+    pushWarn(warnings, id, "warn", FUSE_MSG)
+  }
+}
+
+function fillSchottky(p, pv) {
+  var vd = (pv[0] || 0) - (pv[1] || 0)
+  var s = shockley(clamp(vd, -20, 1.5), SCHOTTKY_IS, SCHOTTKY_NVT)
+  p.current = s.id
+  p.power = Math.abs(s.id * vd)
+}
+
+function fillBridge(p, pv) {
+  var node = []
+  for (var k = 0; k < 4; k++) node.push(pv[k] || 0)
+  var pair = [[0, 2], [1, 2], [3, 0], [3, 1]]
+  var idio = []
+  var power = 0
+  for (var i = 0; i < 4; i++) {
+    var vd = node[pair[i][0]] - node[pair[i][1]]
+    var cur = shockley(clamp(vd, -20, 1.5), DIODE_IS, DIODE_NVT).id
+    idio.push(cur)
+    power += Math.abs(cur * vd)
+  }
+  p.current = idio[0] - idio[2]
+  p.power = power
+  p.pinCurrents = [idio[0] - idio[2], idio[1] - idio[3], -(idio[0] + idio[1]), idio[2] + idio[3]]
+}
+
+function fillIrLed(p, el, id, pv, state, warnings) {
+  var lp = irLedParams()
+  var vd = (pv[0] || 0) - (pv[1] || 0)
+  p.invisible = true
+  if (state.burnt[id]) {
+    p.current = 0
+    p.power = 0
+    p.brightness = 0
+    p.burnt = true
+    pushWarn(warnings, id, "warn", "This IR LED burned out from too much current. Add a bigger resistor, then press Reset.")
+    return
+  }
+  var s = shockley(clamp(vd, -5, lp.vf + 0.45), lp.is, lp.nVt)
+  p.current = s.id
+  p.power = Math.abs(s.id * vd)
+  var bright = s.id / LED_INOM
+  if (bright < 0) bright = 0
+  if (bright > 1) bright = 1
+  p.brightness = bright
+  p.burnt = false
+  if (s.id > IR_IMAX) {
+    state.burnt[id] = true
+    state.burnWhy[id] = "ir"
+    p.burnt = true
+    p.brightness = 0
+    pushWarn(warnings, id, "warn", "This IR LED burned out from too much current. Add a bigger resistor, then press Reset.")
+  }
+}
+
+function fillPhoto(p, el, pv, work) {
+  var vd = (pv[0] || 0) - (pv[1] || 0)
+  var s = shockley(clamp(vd, -20, 1.5), DIODE_IS, DIODE_NVT)
+  var iph = PHOTO_I * photoLight(el, work)
+  p.current = s.id - iph
+  p.power = Math.abs(p.current * vd)
+  p.light = photoLight(el, work)
 }
 
 function fillDiode(p, pv) {

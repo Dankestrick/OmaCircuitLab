@@ -1184,6 +1184,126 @@ assert.ok(Math.abs(ringState.scope.s.t[0] - 0.006) < 1e-9, "oldest kept " + ring
 assert.ok(part(ringLast, "s").vpp1 < 0.05, "DC vpp " + part(ringLast, "s").vpp1)
 assert.strictEqual(part(ringLast, "s").freq1, 0)
 
+// --- schottky, bridge, fuse, tilt, IR LED, photodiode ---
+var sk = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 820 } },
+  { id: "d", type: "schottky", nodes: [2, 0], props: {} }
+], 3)
+var si = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 820 } },
+  { id: "d", type: "diode", nodes: [2, 0], props: {} }
+], 3)
+var skV = part(sk, "d").pinVolts[0] - part(sk, "d").pinVolts[1]
+var siV = part(si, "d").pinVolts[0] - part(si, "d").pinVolts[1]
+console.log("schottky", skV.toFixed(3), "V", part(sk, "d").current.toFixed(4), "A silicon", siV.toFixed(3))
+assert.ok(sk.converged && si.converged)
+assert.ok(skV > 0.18 && skV < 0.4, "schottky Vf " + skV)
+assert.ok(siV > 0.6, "silicon Vf " + siV)
+assert.ok(skV < siV - 0.3)
+
+var brNet = net([
+  { id: "wall", type: "acAdapter", nodes: [1, 0], props: { vrms: 12, freq: 60 } },
+  { id: "br", type: "bridgeRectifier", nodes: [1, 0, 2, 3], props: {} },
+  { id: "c", type: "electrolytic", nodes: [2, 3], props: { farads: 1e-3, ratedVolts: 25 } },
+  { id: "r", type: "resistor", nodes: [2, 3], props: { ohms: 1000 } }
+], 4)
+var brState = E.createState()
+var brLast = null
+var brH = 1 / 2400
+for (var brI = 0; brI < Math.round(0.2 / brH); brI++) brLast = E.solve(brNet, brState, brH)
+var brLo = 1e9
+var brHi = -1e9
+for (var brJ = 0; brJ < 48; brJ++) {
+  var brNow = E.solve(brNet, brState, brH)
+  var brV = part(brNow, "c").pinVolts[0] - part(brNow, "c").pinVolts[1]
+  if (brV < brLo) brLo = brV
+  if (brV > brHi) brHi = brV
+  brLast = brNow
+}
+var brDc = (brLo + brHi) / 2
+console.log("bridge", brDc.toFixed(2), "V ripple", (brHi - brLo).toFixed(3), "burnt", part(brLast, "c").burnt)
+assert.ok(brLast.converged, "bridge settled")
+assert.strictEqual(part(brLast, "c").burnt, false)
+assert.ok(Math.abs(brDc - 15) < 2, "bridge DC " + brDc)
+assert.ok(brHi - brLo < 1.5, "ripple " + (brHi - brLo))
+assert.strictEqual(part(brLast, "br").pinCurrents.length, 4)
+var brSum = 0
+part(brLast, "br").pinCurrents.forEach(function (x) { brSum += x })
+assert.ok(Math.abs(brSum) < 1e-6, "bridge KCL " + brSum)
+
+var fuseNet = net([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "f", type: "fuse", nodes: [1, 0], props: { amps: 0.5 } }
+], 2)
+var fuseBlow = E.solve(fuseNet, E.createState(), 0)
+assert.strictEqual(part(fuseBlow, "f").burnt, true)
+assert.ok((fuseBlow.warnings || []).some(function (w) {
+  return w.part === "f" && w.message === "The fuse blew: too much current. Fix the short, then press Reset."
+}), "fuse warning")
+var fuseDead = E.createState()
+E.solve(fuseNet, fuseDead, 0)
+var fuseOpen = E.solve(fuseNet, fuseDead, 0)
+assert.ok(Math.abs(part(fuseOpen, "f").current) < 1e-6, "blown fuse is open")
+
+var slowNet = net([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "f", type: "fuse", nodes: [1, 2], props: { amps: 0.5 } },
+  { id: "r", type: "resistor", nodes: [2, 0], props: { ohms: 10 } }
+], 3)
+var slow = E.createState()
+var slowLast = null
+for (var slowI = 0; slowI < 40; slowI++) slowLast = E.solve(slowNet, slow, 0.001)
+assert.strictEqual(part(slowLast, "f").burnt, false, "40 ms is under the 50 ms hold")
+for (var slowJ = 0; slowJ < 20; slowJ++) slowLast = E.solve(slowNet, slow, 0.001)
+assert.strictEqual(part(slowLast, "f").burnt, true, "60 ms over the rating blows it")
+
+var tiltOff = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "sw", type: "tiltSwitch", nodes: [1, 2], props: { tilted: false } },
+  { id: "r", type: "resistor", nodes: [2, 0], props: { ohms: 1000 } }
+], 3)
+var tiltOn = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "sw", type: "tiltSwitch", nodes: [1, 2], props: { tilted: true } },
+  { id: "r", type: "resistor", nodes: [2, 0], props: { ohms: 1000 } }
+], 3)
+assert.ok(Math.abs(part(tiltOff, "r").current) < 1e-6, "tilt open")
+assert.ok(part(tiltOn, "r").current > 0.008, "tilt closed " + part(tiltOn, "r").current)
+
+var irOk = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 470 } },
+  { id: "d", type: "irLed", nodes: [2, 0], props: {} }
+], 3)
+console.log("ir", part(irOk, "d").current.toFixed(4), "bright", part(irOk, "d").brightness.toFixed(2))
+assert.strictEqual(part(irOk, "d").invisible, true)
+assert.strictEqual(part(irOk, "d").burnt, false)
+assert.ok(part(irOk, "d").brightness > 0.5 && part(irOk, "d").brightness <= 1)
+var irBurn = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "d", type: "irLed", nodes: [1, 0], props: {} }
+], 2)
+assert.strictEqual(part(irBurn, "d").burnt, true)
+
+var photo = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "d", type: "photodiode", nodes: [0, 1], props: { light: 1 } }
+], 2)
+console.log("photo", part(photo, "d").current.toExponential(3), "light", part(photo, "d").light)
+assert.ok(Math.abs(part(photo, "d").current + 50e-6) < 2e-6, "photocurrent " + part(photo, "d").current)
+
+var coupled = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 330 } },
+  { id: "ir", type: "irLed", nodes: [2, 0], props: {} },
+  { id: "pd", type: "photodiode", nodes: [0, 1], props: { light: 0 } }
+], 3)
+console.log("coupled", part(coupled, "pd").current.toExponential(3), "ir bright", part(coupled, "ir").brightness.toFixed(2))
+assert.ok(part(coupled, "ir").brightness > 0.9)
+assert.ok(Math.abs(part(coupled, "pd").current + 25e-6) < 5e-6, "IR lights the photodiode " + part(coupled, "pd").current)
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.
