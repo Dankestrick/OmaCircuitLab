@@ -4,10 +4,11 @@ Open items first. Each one says who fixes it.
 
 ## Open
 
-- **Servo signal doesn't pass through a button or switch** (Grok, engine). `servoDriveAngle` only matches a board pin on the same node as the servo's signal leg. Wire D9 → pushButton → servo signal and the servo stays at 90° even with the button held down. The signal should follow through anything closed right now: a pressed button, a slide switch, a tilted tilt switch, a closed relay contact, and resistors up to about 10 kΩ. The same applies to `tone()` reaching a buzzer and to motorDriver/robotCar inputs, so check every place that looks up a "driving pin".
+None.
 
 ## Fixed
 
+- Servo, tone(), motor-driver PWM, and a sonar or robot TRIG only saw a board pin on the same node. They now follow a pressed button, the selected side of a slide switch, a tilted tilt switch, a closed relay contact, or a resistor up to 10 kΩ, for up to four hops. The nearest OmaDuino, OmaNano, or OmaTiny pin wins. Letting the button go holds the servo angle (6b1f97d).
 - Inspect cut off text on the right for long part names like the HC-SR04 (title now wraps).
 
 - Robot spun in circles: the arena moved in wall-clock time while sketches count sim time (e033253).
