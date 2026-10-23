@@ -1755,9 +1755,44 @@ var drvThru = E.solve(drvBtn, drvBtnState, 0)
 console.log("driver through button", drvThru.parts.drv.motorA.toFixed(3))
 assert.ok(drvThru.parts.drv.motorA > 0.3 && drvThru.parts.drv.motorA < 0.55, "PWM through a pressed button")
 drvBtn.elements[2].props.pressed = false
-E.solve(drvBtn, drvBtnState, 0)
 var drvBlocked = E.solve(drvBtn, drvBtnState, 0)
-assert.ok(Math.abs(drvBlocked.parts.drv.motorA) < 0.05, "open button drops the driver, was " + drvBlocked.parts.drv.motorA)
+assert.ok(Math.abs(drvBlocked.parts.drv.motorA) < 0.05, "open button drops the driver on this solve, was " + drvBlocked.parts.drv.motorA)
+
+var digState = E.createState()
+var digBtn = net([
+  duinoElement(STUB, { 12: 9 }),
+  { id: "bat", type: "aaPack", nodes: [3, 0], props: { cells: 4 } },
+  { id: "b", type: "pushButton", nodes: [9, 11], props: { pressed: true } },
+  { id: "drv", type: "motorDriver", nodes: [3, 0, 11, 0, 8, 8, 4, 5, 6, 7], props: {} },
+  { id: "ma", type: "motor", nodes: [4, 5], props: {} }
+], 50)
+E.solve(digBtn, digState, 0.001)
+digState.mcu.mcu.vm.pins[5].mode = "out"
+digState.mcu.mcu.vm.pins[5].level = 1
+digState.mcu.mcu.vm.pins[5].pwm = null
+var digHi = E.solve(digBtn, digState, 0.001)
+console.log("driver digital", digHi.parts.drv.motorA.toFixed(3))
+assert.ok(digHi.parts.drv.motorA > 0.7 && digHi.parts.drv.motorA < 0.95, "digital HIGH through a button " + digHi.parts.drv.motorA)
+digState.mcu.mcu.vm.pins[5].level = 0
+var digLo = E.solve(digBtn, digState, 0.001)
+assert.ok(Math.abs(digLo.parts.drv.motorA) < 0.05, "digital LOW drops the driver on this solve " + digLo.parts.drv.motorA)
+
+var relayDrv = net([
+  duinoElement(STUB, { 12: 9 }),
+  { id: "bat", type: "battery9v", nodes: [3, 0], props: {} },
+  { id: "pack", type: "aaPack", nodes: [8, 0], props: { cells: 4 } },
+  { id: "k", type: "relay", nodes: [3, 0, 9, 11, 12], props: {} },
+  { id: "drv", type: "motorDriver", nodes: [8, 0, 11, 0, 1, 1, 4, 5, 6, 7], props: {} },
+  { id: "ma", type: "motor", nodes: [4, 5], props: {} }
+], 50)
+var relayDrvState = E.createState()
+E.solve(relayDrv, relayDrvState, 0.001)
+relayDrvState.mcu.mcu.vm.pins[5].mode = "out"
+relayDrvState.mcu.mcu.vm.pins[5].level = 1
+relayDrvState.mcu.mcu.vm.pins[5].pwm = null
+var relayDrvHi = E.solve(relayDrv, relayDrvState, 0.001)
+assert.strictEqual(relayDrvHi.parts.k.on, true)
+assert.ok(relayDrvHi.parts.drv.motorA > 0.7, "relay that closes this solve drives the motor " + relayDrvHi.parts.drv.motorA)
 
 var trigCode = "const int trig = 7, echo = 8;\n" +
   "void setup() {\n  pinMode(trig, OUTPUT);\n  pinMode(echo, INPUT);\n  Serial.begin(9600);\n}\n" +

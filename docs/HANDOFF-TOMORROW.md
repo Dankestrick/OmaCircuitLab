@@ -35,7 +35,7 @@ Everything works in the shell and all 12 test files pass (`for t in tests/*.test
 
 ## Next steps
 
-1. Grok fixed the open bug overnight (`6b1f97d`): servo, tone(), motor driver, and robot car now follow a driving pin through a pressed button, switch, closed relay, or resistor up to 10 kΩ. Have Dank retry his D9 → pushButton → servo signal circuit in the app.
+1. Grok fixed the open bug overnight (`6b1f97d`): servo, tone(), motor driver, and robot car now follow a driving pin through a pressed button, switch, closed relay, or resistor up to 10 kΩ. A digital HIGH or LOW, and a relay that closes on this solve, already move the motor in that same solve. Dank retried his D9 → pushButton → servo circuit in the app on 2026-10-23 and it works.
 2. Let Dank keep building and log everything in `docs/BUGS.md`. Mouse paths I haven't tested: clamp clipping, board +/−, the scope's scroll-to-change time/div, the tilt switch click, and the code editor on OmaNano/OmaTiny.
 3. Ideas not done yet: current-flow dots on wires (Clamp.js now gives every wire's current, so this is feasible); a proximity link from IR LED to photodiode; schematic symbols in Inspect (ask Dank first); CPU measurement on the robot and scope lessons.
 4. Marketplace prep: `omarchy-plugin-review` skill, `preview.png`, README screenshots, and push to GitHub when Dank says.

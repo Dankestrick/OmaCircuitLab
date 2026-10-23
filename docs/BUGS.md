@@ -8,7 +8,7 @@ None.
 
 ## Fixed
 
-- Servo, tone(), motor-driver PWM, and a sonar or robot TRIG only saw a board pin on the same node. They now follow a pressed button, the selected side of a slide switch, a tilted tilt switch, a closed relay contact, or a resistor up to 10 kΩ, for up to four hops. The nearest OmaDuino, OmaNano, or OmaTiny pin wins. Letting the button go holds the servo angle (6b1f97d).
+- Servo, tone(), motor-driver PWM, and a sonar or robot TRIG only saw a board pin on the same node. They now follow a pressed button, the selected side of a slide switch, a tilted tilt switch, a closed relay contact, or a resistor up to 10 kΩ, for up to four hops. The nearest OmaDuino, OmaNano, or OmaTiny pin wins. Letting the button go holds the servo angle (6b1f97d). Dank checked D9 → push button → servo in the app on 2026-10-23.
 - Inspect cut off text on the right for long part names like the HC-SR04 (title now wraps).
 
 - Robot spun in circles: the arena moved in wall-clock time while sketches count sim time (e033253).

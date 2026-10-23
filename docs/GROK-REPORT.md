@@ -14,7 +14,7 @@ Done. Not pushed. The shell was not restarted. `Engine.js` stayed ES5. `Catalog.
 | 8 | `18a869b` | 555 astable, 1 kΩ, 10 kΩ, 10 µF, measured 6.803 Hz. RESET under 0.7 V forces the output low. One flip per solve, so the lesson's DC solve does not chatter. |
 | 9 | `8797dd3` | OmaNano blinks D13 for 500 ms on and 500 ms off. Its 5 V pin into 100 Ω is 4.990 V and its 3.3 V pin is 3.267 V, same as the OmaDuino. OmaTiny blinks PB0 from a 5 V supply, same timing. A forced HIGH sources 13.1 mA out of PB0 and that current enters VCC. At 9 V it stays off, the LED stays dark, and the warning is `This OmaTiny needs between 2.7 V and 5.5 V on VCC. Above 6 V it stays off.` Two boards at once keep two different VMs. Sketch pin numbers come from `Catalog.mcuPinNumber(index, type)`. |
 
-`docs/BUGS.md` is still open and was not part of this contract. A servo signal, `tone()`, the motor driver, and the robot car still only see a board pin that sits on the same node. A closed switch or a resistor in that wire does not pass the signal.
+`docs/BUGS.md` has no open items. `6b1f97d` makes a servo signal, `tone()`, motor-driver PWM, and a sonar or robot TRIG follow a board pin through a pressed button, a switch, a closed relay contact, or a resistor up to 10 kΩ. A plain digital HIGH or LOW on that same path already moves the motor in the one solve that sees the pin, and opening the button drops it in that same solve. A relay that pulls in during a solve drives the motor before that solve returns. Counting the digital pin as a fake PWM duty was left out, because the pin is a real 25 Ω output and the driver already reads the wire.
 
 ## Earlier report
 

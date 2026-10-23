@@ -42,7 +42,7 @@ Pots, LDRs, thermistors, capacitors, fuses, buzzers, motors, and the relay coil 
 
 Servo angle 0 and PWM duty 0 are real values. A missing servo angle leaves `state.servoAngle` alone, which is why a released button holds. Tone must be a finite number above 0. TRIG matches any sketch pin, and it does not care about mode.
 
-`seedDriver` runs before Newton, and `noteRelays` runs inside Newton. Servo, tone, and TRIG are read in `assemble`, after the relay has updated, so they see a contact that closed on this solve. The motor-driver scale is the snapshot from the start of the solve. A relay that closes now changes the driver on the next solve. A plain `digitalWrite` HIGH has no PWM number, so the driver falls back to "input more than 2.5 V above GND". That voltage is the previous solution. Opening a button can leave the motor output on for one step. The test solves once more before it asserts the drop. PWM through the graph does not need the voltage, so a 10 kΩ series resistor still passes a duty even when the pin sags under 2.5 V. A digital HIGH through 10 kΩ into the driver's 100 kΩ input still sits near 4.5 V, so the voltage fallback accepts it.
+`seedDriver` runs before Newton, and `noteRelays` runs inside Newton. `noteModes` then refreshes the driver scale, so a contact that closes on this solve drives the motor before the solve returns. Servo, tone, and TRIG are read in `assemble`, after the relay has updated. A plain `digitalWrite` has no PWM number. The pin is a 25 Ω source, and the driver uses "input more than 2.5 V above GND" when no PWM duty is in reach. That settles inside the solve: a HIGH through a pressed button is full on, and a LOW or an open button drops the motor on that same solve. PWM through the graph does not need the voltage, so a 10 kΩ series resistor still passes a duty even when the pin sags under 2.5 V. A digital HIGH through 10 kΩ into the driver's 100 kΩ input still sits near 4.5 V, so the voltage fallback accepts it.
 
 `pulseIn` lives in `Mcu.js`. When the engine returns 0 µs, the VM waits the timeout before the sketch continues. The distance example's default timeout is 1 s. The robot sketch passes 30 ms. The new test uses `pulseIn(..., 2000)` so the open-button read shows up in a few steps. Do not edit `Mcu.js` for this.
 
@@ -71,11 +71,12 @@ Do not re-derive the solver. Newton takes at most a 2 V step and sets `work.hitL
 - The plugin is local and ahead of GitHub. Do not push until Dank says so.
 - A signal through a pot wiper, an LDR, or a capacitor is not a hop. People will try the pot.
 - Motor back-EMF is still absent. Driver current is not taken from the VM pin. Pin writes show up on the next solve, because `fill` runs before `runBoards`.
-- `docs/GROK-REPORT.md` still describes the driving-pin bug as open.
+- `docs/GROK-REPORT.md` now says the driving-pin bug is fixed.
 
-## What I would change
+## Checked and left alone (2026-10-23)
 
-- Build the closed-path graph once per solve. Each buzzer, servo, driver input, and sonar rebuilds it today. Breadboards are small enough that it does not show up.
-- Count a digital output in the driver lookup: HIGH as duty 255, LOW as 0, when `pwm` is null. The motor output would follow the pin on the same solve, including the moment a button opens, and it would stop depending on the previous voltage.
-- Take the driver snapshot after `noteRelays`, so a contact that closes this solve drives the motor this solve. Servo, tone, and TRIG already work that way.
-- Leave the 2 V Newton cap, the junction `hitLimit` rule, the −0.2 V NMOS hold, the missing motor back-EMF, and the 25 ms worker cap where they are.
+A digital HIGH through a pressed button already gives motor A about 0.83 on the solve that sees the pin. Setting that pin LOW, or opening the button, drops the motor in that same solve, including a 1 ms step that starts from the old voltages. A relay that pulls in during the solve passes the pin to the driver before the solve returns. `noteModes` refreshes the driver scale on every Newton iteration, so the seed snapshot is only the first guess.
+
+Counting HIGH as duty 255 and LOW as 0 was not done. The pin is a 25 Ω source, and the driver input is the real voltage. A fake duty would turn the motor on when the wire is actually low, or off when the wire is actually high. Rebuilding the closed-path graph once per solve does not show up on a breadboard.
+
+Leave the 2 V Newton cap, the junction `hitLimit` rule, the −0.2 V NMOS hold, the missing motor back-EMF, and the 25 ms worker cap where they are.
