@@ -1661,24 +1661,114 @@ export function fillR(p, el, id, pv, state, nl, warnings) {
   }
 }
 
-export function buzzerTone(state, nl, plusNode) {
-  if (!nl || plusNode < 0) return 0
+// A signal wire may pass through parts that are closed right now. One hop is
+// one of those parts. Four hops is the limit, and the closest board pin wins.
+export function signalLink(adj, a, b) {
+  if (a === b || a < 0 || b < 0) return
+  if (!adj[a]) adj[a] = []
+  if (!adj[b]) adj[b] = []
+  adj[a].push(b)
+  adj[b].push(a)
+}
+
+export function signalAdj(nl, state) {
+  var adj = {}
+  if (!nl) return adj
   for (var i = 0; i < nl.elements.length; i++) {
-    var board = nl.elements[i]
-    if (!isBoard(board.type)) continue
-    var map = boardMap(board)
-    var slot = state.mcu && state.mcu[partId(board, i)]
-    var srcPins = slot && slot.vm ? slot.vm.pins : null
-    if (!srcPins) continue
-    for (var s = 0; s < map.pins.length; s++) {
-      if (map.pins[s] !== plusNode) continue
-      var src = srcPins[s]
-      if (!src || src.tone === null || src.tone === undefined) continue
-      var hz = Number(src.tone)
-      if (isFinite(hz) && hz > 0) return hz
+    var el = nl.elements[i]
+    var t = el.type
+    if (t === "resistor") {
+      var nr = pins(el, nl.nodeCount, 2)
+      if (!nr) continue
+      var ohms = num(el, "ohms", 220)
+      if (!(ohms > 0)) ohms = 1e-3
+      if (ohms <= 10000) signalLink(adj, nr[0], nr[1])
+    } else if (t === "pushButton") {
+      var nb = pins(el, nl.nodeCount, 2)
+      if (!nb) continue
+      if (el.props && (el.props.pressed === true || el.props.pressed === 1)) signalLink(adj, nb[0], nb[1])
+    } else if (t === "tiltSwitch") {
+      var nt = pins(el, nl.nodeCount, 2)
+      if (!nt) continue
+      if (el.props && (el.props.tilted === true || el.props.tilted === 1)) signalLink(adj, nt[0], nt[1])
+    } else if (t === "slideSwitch") {
+      var ns = pins(el, nl.nodeCount, 3)
+      if (!ns) continue
+      signalLink(adj, ns[1], num(el, "position", 0) >= 0.5 ? ns[2] : ns[0])
+    } else if (t === "relay") {
+      var nk = pins(el, nl.nodeCount, 5)
+      if (!nk) continue
+      var on = state && state.relayOn && state.relayOn[partId(el, i)] === true
+      signalLink(adj, nk[2], on ? nk[3] : nk[4])
     }
   }
-  return 0
+  return adj
+}
+
+export function pinDrive(state, nl, node, kind) {
+  if (!nl || node < 0) return null
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (!isBoard(el.type)) continue
+    var map = boardMap(el)
+    var slot = state && state.mcu && state.mcu[partId(el, i)]
+    var srcPins = slot && slot.vm ? slot.vm.pins : null
+    for (var p = 0; p < map.pins.length; p++) {
+      if (map.pins[p] !== node) continue
+      if (kind === "pin") return true
+      if (!srcPins || !srcPins[p]) continue
+      var src = srcPins[p]
+      if (kind === "servo") {
+        if (src.servo === null || src.servo === undefined) continue
+        var ang = Number(src.servo)
+        if (isFinite(ang)) return ang
+      } else if (kind === "tone") {
+        if (src.tone === null || src.tone === undefined) continue
+        var hz = Number(src.tone)
+        if (isFinite(hz) && hz > 0) return hz
+      } else if (kind === "pwm") {
+        if (src.pwm === null || src.pwm === undefined) continue
+        var duty = Number(src.pwm)
+        if (isFinite(duty)) return duty
+      }
+    }
+  }
+  return null
+}
+
+export function nearestDrive(state, nl, start, kind) {
+  if (!nl || typeof start !== "number" || start < 0) return null
+  var direct = pinDrive(state, nl, start, kind)
+  if (direct !== null) return direct
+  var adj = signalAdj(nl, state)
+  var seen = {}
+  seen[start] = true
+  var q = [start]
+  var depth = [0]
+  var qi = 0
+  while (qi < q.length) {
+    var node = q[qi]
+    var hops = depth[qi]
+    qi++
+    if (hops >= 4) continue
+    var next = adj[node]
+    if (!next) continue
+    for (var k = 0; k < next.length; k++) {
+      var nb = next[k]
+      if (seen[nb]) continue
+      seen[nb] = true
+      var hit = pinDrive(state, nl, nb, kind)
+      if (hit !== null) return hit
+      q.push(nb)
+      depth.push(hops + 1)
+    }
+  }
+  return null
+}
+
+export function buzzerTone(state, nl, plusNode) {
+  var hz = nearestDrive(state, nl, plusNode, "tone")
+  return hz === null ? 0 : hz
 }
 
 export function fillSwitch(p, el, pv) {
@@ -2634,7 +2724,7 @@ export function runBoards(nl, state, result, v, dt) {
         return nodeV(v, node) - nodeV(v, map.gnd)
       },
       pulseIn: function (pin) {
-        return sonarEchoUs(nl, v, map, pin, answered)
+        return sonarEchoUs(nl, v, map, pin, answered, state)
       }
     })
     copyBoardRuntime(result.parts[id], slot, before)
@@ -2736,23 +2826,7 @@ export function fillServo(p, el, id, v, state, nl, warnings) {
 }
 
 export function servoDriveAngle(state, nl, signalNode) {
-  if (!nl || signalNode < 0) return null
-  for (var i = 0; i < nl.elements.length; i++) {
-    var el = nl.elements[i]
-    if (!isBoard(el.type)) continue
-    var map = boardMap(el)
-    var slot = state.mcu && state.mcu[partId(el, i)]
-    var srcPins = slot && slot.vm ? slot.vm.pins : null
-    if (!srcPins) continue
-    for (var s = 0; s < map.pins.length; s++) {
-      if (map.pins[s] !== signalNode) continue
-      var src = srcPins[s]
-      if (!src || src.servo === null || src.servo === undefined) continue
-      var ang = Number(src.servo)
-      if (isFinite(ang)) return ang
-    }
-  }
-  return null
+  return nearestDrive(state, nl, signalNode, "servo")
 }
 
 export function seedDriver(nl, v, state, work) {
@@ -2783,23 +2857,7 @@ export function driverScale(v, state, nl, gnd, inNode) {
 }
 
 export function pwmOnNode(state, nl, node) {
-  if (!nl || !state) return null
-  for (var i = 0; i < nl.elements.length; i++) {
-    var el = nl.elements[i]
-    if (!isBoard(el.type)) continue
-    var map = boardMap(el)
-    var slot = state.mcu && state.mcu[partId(el, i)]
-    var srcPins = slot && slot.vm ? slot.vm.pins : null
-    if (!srcPins) continue
-    for (var p = 0; p < map.pins.length; p++) {
-      if (map.pins[p] !== node) continue
-      var src = srcPins[p]
-      if (!src || src.pwm === null || src.pwm === undefined) continue
-      var duty = Number(src.pwm)
-      if (isFinite(duty)) return duty
-    }
-  }
-  return null
+  return nearestDrive(state, nl, node, "pwm")
 }
 
 export function stampDriver(sys, src, v, state, nl, work) {
@@ -2841,7 +2899,7 @@ export function fillDriver(p, el, id, v, state, nl, warnings) {
   if (vm < 3 && driving) pushWarn(warnings, id, "warn", "Motor driver has no motor power (VM)")
 }
 
-export function sonarEchoUs(nl, v, map, pin, answered) {
+export function sonarEchoUs(nl, v, map, pin, answered, state) {
   pin = pin | 0
   if (!nl || !map || !map.pins || pin < 0 || pin >= map.pins.length) return 0
   var echoNode = map.pins[pin]
@@ -2851,20 +2909,15 @@ export function sonarEchoUs(nl, v, map, pin, answered) {
     var ns = sonarNodes(el, v.length)
     if (!ns || ns.echo !== echoNode) continue
     if (!(nodeV(v, ns.vcc) - nodeV(v, ns.gnd) > 4)) continue
-    if (!trigOnBoard(nl, ns.trig)) continue
+    if (!trigOnBoard(nl, ns.trig, state)) continue
     answered[partId(el, i)] = true
     return ns.distance * 58
   }
   return 0
 }
 
-export function trigOnBoard(nl, trigNode) {
-  for (var i = 0; i < nl.elements.length; i++) {
-    if (!isBoard(nl.elements[i].type)) continue
-    var map = boardMap(nl.elements[i])
-    for (var p = 0; p < map.pins.length; p++) if (map.pins[p] === trigNode) return true
-  }
-  return false
+export function trigOnBoard(nl, trigNode, state) {
+  return nearestDrive(state, nl, trigNode, "pin") === true
 }
 
 export function markSonarPings(result, answered) {

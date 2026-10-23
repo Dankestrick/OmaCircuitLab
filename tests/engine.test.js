@@ -1640,6 +1640,168 @@ assert.strictEqual(duoResult.parts.mcu.pins.length, 20)
 assert.strictEqual(duoResult.parts.tiny.pins.length, 5)
 assert.strictEqual(duoResult.parts.tiny.running, true)
 
+// --- a driving pin follows a closed path, up to 4 hops, and the nearest pin wins ---
+function btnServo(pressed) {
+  return net([
+    duinoElement(McuLib.example("servo"), { 16: 4 }),
+    { id: "b", type: "pushButton", nodes: [4, 6], props: { pressed: pressed } },
+    { id: "sv", type: "servo", nodes: [0, 1, 6], props: {} }
+  ], 50)
+}
+var servoOpen = E.createState()
+var servoHeldOpen = 90
+for (var so = 0; so < 20; so++) servoHeldOpen = E.solve(btnServo(false), servoOpen, 0.001).parts.sv.angle
+assert.strictEqual(servoHeldOpen, 90, "open button leaves the servo at 90")
+var servoBtn = E.createState()
+var servoFollow = 90
+for (var sf = 0; sf < 30; sf++) servoFollow = E.solve(btnServo(true), servoBtn, 0.001).parts.sv.angle
+console.log("servo through button", servoFollow)
+assert.ok(servoFollow >= 2 && servoFollow <= 8, "pressed button follows the sweep, was " + servoFollow)
+var servoLetGo = servoFollow
+for (var sr = 0; sr < 20; sr++) servoLetGo = E.solve(btnServo(false), servoBtn, 0.001).parts.sv.angle
+assert.strictEqual(servoLetGo, servoFollow, "released button holds the angle")
+
+var toneThru = E.createState()
+var toneThruNet = net([
+  duinoElement(STUB, { 15: 5 }),
+  { id: "r", type: "resistor", nodes: [5, 6], props: { ohms: 220 } },
+  { id: "z", type: "buzzer", nodes: [6, 0], props: {} }
+], 50)
+E.solve(toneThruNet, toneThru, 0)
+toneThru.mcu.mcu.vm.pins[8].tone = 440
+toneThru.mcu.mcu.vm.pins[8].pwm = 127
+assert.strictEqual(part(E.solve(toneThruNet, toneThru, 0), "z").freq, 440, "tone through 220 Ω")
+
+function toneOhms(ohms) {
+  var st = E.createState()
+  var bare = net([
+    duinoElement(STUB, { 15: 5 }),
+    { id: "r", type: "resistor", nodes: [5, 6], props: { ohms: ohms } },
+    { id: "z", type: "buzzer", nodes: [6, 0], props: {} }
+  ], 50)
+  E.solve(bare, st, 0)
+  st.mcu.mcu.vm.pins[8].tone = 440
+  return part(E.solve(bare, st, 0), "z").freq
+}
+assert.strictEqual(toneOhms(10000), 440, "10 kΩ still carries a tone")
+assert.strictEqual(toneOhms(47000), 0, "47 kΩ does not carry a tone")
+
+function toneChain(hops) {
+  var els = [duinoElement(STUB, { 15: 5 })]
+  var node = 5
+  for (var h = 0; h < hops; h++) {
+    els.push({ id: "r" + h, type: "resistor", nodes: [node, node + 1], props: { ohms: 220 } })
+    node++
+  }
+  els.push({ id: "z", type: "buzzer", nodes: [node, 0], props: {} })
+  var st = E.createState()
+  var bare = net(els, node + 1)
+  E.solve(bare, st, 0)
+  st.mcu.mcu.vm.pins[8].tone = 440
+  return part(E.solve(bare, st, 0), "z").freq
+}
+assert.strictEqual(toneChain(4), 440, "four resistors still reach the pin")
+assert.strictEqual(toneChain(5), 0, "a fifth resistor is too far")
+
+var tiltTone = E.createState()
+var tiltNet = net([
+  duinoElement(STUB, { 15: 5 }),
+  { id: "sw", type: "tiltSwitch", nodes: [5, 6], props: { tilted: true } },
+  { id: "z", type: "buzzer", nodes: [6, 0], props: {} }
+], 50)
+E.solve(tiltNet, tiltTone, 0)
+tiltTone.mcu.mcu.vm.pins[8].tone = 550
+assert.strictEqual(part(E.solve(tiltNet, tiltTone, 0), "z").freq, 550, "tilted switch passes tone")
+tiltNet.elements[1].props.tilted = false
+assert.strictEqual(part(E.solve(tiltNet, tiltTone, 0), "z").freq, 0, "untilted switch blocks tone")
+
+var slideTone = E.createState()
+var slideNet = net([
+  duinoElement(STUB, { 15: 5 }),
+  { id: "sw", type: "slideSwitch", nodes: [6, 5, 7], props: { position: 0 } },
+  { id: "z", type: "buzzer", nodes: [6, 0], props: {} }
+], 50)
+E.solve(slideNet, slideTone, 0)
+slideTone.mcu.mcu.vm.pins[8].tone = 330
+assert.strictEqual(part(E.solve(slideNet, slideTone, 0), "z").freq, 330, "slide common to A")
+slideNet.elements[1].props.position = 1
+assert.strictEqual(part(E.solve(slideNet, slideTone, 0), "z").freq, 0, "slide on B leaves A quiet")
+
+var relayTone = E.createState()
+var relayToneNet = net([
+  duinoElement(STUB, { 15: 5 }),
+  { id: "bat", type: "battery9v", nodes: [3, 0], props: {} },
+  { id: "k", type: "relay", nodes: [3, 0, 5, 6, 7], props: {} },
+  { id: "z", type: "buzzer", nodes: [6, 0], props: {} }
+], 8)
+E.solve(relayToneNet, relayTone, 0)
+relayTone.mcu.mcu.vm.pins[8].tone = 220
+var relayBuzz = E.solve(relayToneNet, relayTone, 0)
+assert.strictEqual(relayBuzz.parts.k.on, true)
+assert.strictEqual(part(relayBuzz, "z").freq, 220, "closed relay NO passes tone")
+
+var drvBtnState = E.createState()
+var drvBtn = net([
+  duinoElement(STUB, { 12: 9 }),
+  { id: "bat", type: "aaPack", nodes: [3, 0], props: { cells: 4 } },
+  { id: "b", type: "pushButton", nodes: [9, 11], props: { pressed: true } },
+  { id: "drv", type: "motorDriver", nodes: [3, 0, 11, 0, 8, 8, 4, 5, 6, 7], props: {} },
+  { id: "ma", type: "motor", nodes: [4, 5], props: {} }
+], 50)
+E.solve(drvBtn, drvBtnState, 0)
+drvBtnState.mcu.mcu.vm.pins[5].mode = "out"
+drvBtnState.mcu.mcu.vm.pins[5].pwm = 128
+var drvThru = E.solve(drvBtn, drvBtnState, 0)
+console.log("driver through button", drvThru.parts.drv.motorA.toFixed(3))
+assert.ok(drvThru.parts.drv.motorA > 0.3 && drvThru.parts.drv.motorA < 0.55, "PWM through a pressed button")
+drvBtn.elements[2].props.pressed = false
+E.solve(drvBtn, drvBtnState, 0)
+var drvBlocked = E.solve(drvBtn, drvBtnState, 0)
+assert.ok(Math.abs(drvBlocked.parts.drv.motorA) < 0.05, "open button drops the driver, was " + drvBlocked.parts.drv.motorA)
+
+var trigCode = "const int trig = 7, echo = 8;\n" +
+  "void setup() {\n  pinMode(trig, OUTPUT);\n  pinMode(echo, INPUT);\n  Serial.begin(9600);\n}\n" +
+  "void loop() {\n  long duration = pulseIn(echo, HIGH, 2000);\n  int cm = duration / 58;\n" +
+  "  Serial.print(cm);\n  Serial.println(\" cm\");\n  delay(5);\n}\n"
+var trigBtn = net([
+  duinoElement(trigCode, { 14: 5, 15: 6 }),
+  { id: "b", type: "pushButton", nodes: [5, 9], props: { pressed: true } },
+  { id: "us", type: "hcsr04", nodes: [1, 9, 6, 0], props: { distance: 30 } }
+], 50)
+var trigState = E.createState()
+var trigLast = null
+for (var tb = 0; tb < 40; tb++) trigLast = E.solve(trigBtn, trigState, 0.001)
+assert.ok(/(^|\n)30 cm/.test(trigLast.parts.mcu.serial), "TRIG through a button reads 30 cm, got " + JSON.stringify(trigLast.parts.mcu.serial))
+trigBtn.elements[1].props.pressed = false
+var trigOff = trigLast
+for (var tbo = 0; tbo < 30; tbo++) trigOff = E.solve(trigBtn, trigState, 0.001)
+assert.ok(/(^|\n)0 cm/.test(trigOff.parts.mcu.serial), "open button reads 0 cm, got " + JSON.stringify(trigOff.parts.mcu.serial))
+
+var nanoSig = headerNodes(22, [20, 21])
+nanoSig[7] = 4
+var nanoServo = E.createState()
+var nanoServoNet = net([
+  { id: "nano", type: "omaNano", nodes: nanoSig, props: { code: STUB } },
+  { id: "b", type: "pushButton", nodes: [4, 6], props: { pressed: true } },
+  { id: "sv", type: "servo", nodes: [0, 1, 6], props: {} }
+], 130)
+E.solve(nanoServoNet, nanoServo, 0)
+nanoServo.mcu.nano.vm.pins[9].servo = 30
+assert.strictEqual(E.solve(nanoServoNet, nanoServo, 0).parts.sv.angle, 30, "Nano D9 through a button")
+nanoServoNet.elements[1].props.pressed = false
+assert.strictEqual(E.solve(nanoServoNet, nanoServo, 0).parts.sv.angle, 30, "Nano holds when the button opens")
+
+var tinyTone = E.createState()
+var tinyToneNet = net([
+  { id: "src", type: "benchSupply", nodes: [1, 0], props: { volts: 5, currentLimit: 0.2 } },
+  { id: "tiny", type: "omaTiny", nodes: [10, 11, 12, 0, 2, 13, 14, 1], props: { code: STUB } },
+  { id: "r", type: "resistor", nodes: [2, 6], props: { ohms: 220 } },
+  { id: "z", type: "buzzer", nodes: [6, 0], props: {} }
+], 15)
+E.solve(tinyToneNet, tinyTone, 0)
+tinyTone.mcu.tiny.vm.pins[0].tone = 660
+assert.strictEqual(part(E.solve(tinyToneNet, tinyTone, 0), "z").freq, 660, "Tiny PB0 tone through 220 Ω")
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.
