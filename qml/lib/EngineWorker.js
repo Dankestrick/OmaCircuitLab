@@ -50,6 +50,18 @@ WorkerScript.onMessage = function (msg) {
     return
   }
 
+  if (msg.cmd === "setProp") {
+    if (netlist && netlist.elements && msg.id !== undefined && msg.id !== null) {
+      for (var s = 0; s < netlist.elements.length; s++) {
+        var one = netlist.elements[s]
+        if (!one || one.id !== msg.id) continue
+        if (!one.props) one.props = {}
+        one.props[msg.key] = msg.value
+      }
+    }
+    return
+  }
+
   if (msg.cmd === "step") {
     if (!netlist) {
       WorkerScript.sendMessage({ kind: "result", result: fail("Press Run first.") })

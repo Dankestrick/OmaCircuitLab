@@ -781,6 +781,53 @@ var pwmHalf = E.solve(pwmNet, pwmState, 0)
 console.log("driver pwm", pwmHalf.parts.drv.motorA.toFixed(3))
 assert.ok(pwmHalf.parts.drv.motorA > 0.3 && pwmHalf.parts.drv.motorA < 0.55, "half speed " + pwmHalf.parts.drv.motorA)
 
+// --- robot car: drives ahead at 100 cm, backs up when the object is close ---
+var robotBare = lessonBare("robot")
+var robotState = E.createState()
+var ahead = null
+var aheadN = 0
+for (var ri = 0; ri < 80; ri++) {
+  ahead = E.solve(robotBare, robotState, 0.001)
+  aheadN = ri + 1
+  if (ahead.parts.car.leftSpin > 0.5 && ahead.parts.car.rightSpin > 0.5) break
+}
+console.log("robot ahead", aheadN, ahead.parts.car.leftSpin.toFixed(2), ahead.parts.car.rightSpin.toFixed(2), JSON.stringify(ahead.parts.mcu.serial))
+assert.ok(ahead.parts.car.leftSpin > 0.5 && ahead.parts.car.rightSpin > 0.5, "both wheels forward")
+assert.ok(!warnLevel(ahead, "info", "car"))
+for (var re = 0; re < robotBare.elements.length; re++) {
+  if (robotBare.elements[re].id === "car") robotBare.elements[re].props.distance = 10
+}
+var backed = ahead
+var backN = 0
+for (var rj = 0; rj < 80; rj++) {
+  backed = E.solve(robotBare, robotState, 0.001)
+  backN = rj + 1
+  if (backed.parts.car.leftSpin < -0.5 && backed.parts.car.rightSpin < -0.5) break
+}
+console.log("robot back", backN, backed.parts.car.leftSpin.toFixed(2), backed.parts.car.rightSpin.toFixed(2), JSON.stringify(backed.parts.mcu.serial))
+assert.ok(backed.parts.car.leftSpin < -0.5 && backed.parts.car.rightSpin < -0.5, "both wheels reverse")
+
+// setProp changes a prop, does not solve, and does not reply.
+var propWorker = loadWorker()
+var propCode = McuLib.example("distance")
+var propNet = net([
+  duinoElement(propCode, { 14: 5, 15: 6 }),
+  { id: "us", type: "hcsr04", nodes: [1, 5, 6, 0], props: { distance: 30 } }
+], 50)
+propWorker.send({ cmd: "load", netlist: propNet })
+var propCalls = propWorker.calls()
+var propSilent = propWorker.send({ cmd: "setProp", id: "us", key: "distance", value: 12 })
+assert.strictEqual(propSilent.length, 0, "setProp does not reply")
+assert.strictEqual(propWorker.calls(), propCalls, "setProp does not solve")
+var propMissing = propWorker.send({ cmd: "setProp", id: "missing", key: "distance", value: 1 })
+assert.strictEqual(propMissing.length, 0)
+var propFar = propWorker.send({ cmd: "step", dt: 0.001, steps: 150 })
+var propSerial = propFar[0].result.parts.mcu.serial.trim().split("\n")
+console.log("setProp serial", JSON.stringify(propSerial[propSerial.length - 1]))
+assert.strictEqual(propSerial[propSerial.length - 1], "12 cm")
+var idle = loadWorker()
+assert.strictEqual(idle.send({ cmd: "setProp", id: "us", key: "distance", value: 3 }).length, 0)
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.

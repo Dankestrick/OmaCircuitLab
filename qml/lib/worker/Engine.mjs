@@ -52,7 +52,7 @@ export function isTimeDependent(netlist) {
   if (!els) return false
   for (var i = 0; i < els.length; i++) {
     var t = els[i].type
-    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver") return true
+    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar") return true
   }
   return false
 }
@@ -789,7 +789,13 @@ export function build(nl, state, v, dt, ref, work) {
       var lp = ledParams(str(el, "color", "red"))
       var vd = limitJunction(work, id, nodeV(v, nd[0]) - nodeV(v, nd[1]), lp.vf + 0.45, -5, lp.nVt, lp.is)
       stampDiode(sys, nd[0], nd[1], vd, lp.is, lp.nVt)
-    } else if (el.type === "hcsr04") {
+    } else if (el.type === "hcsr04" || el.type === "robotCar") {
+      if (el.type === "robotCar") {
+        var nCar = pins(el, nl.nodeCount, 8)
+        if (!nCar) continue
+        stampG(sys, nCar[0], nCar[1], 1 / 10)
+        stampG(sys, nCar[2], nCar[3], 1 / 10)
+      }
       var nSonar = sonarNodes(el, nl.nodeCount)
       if (!nSonar) continue
       stampG(sys, nSonar.vcc, nSonar.gnd, 1 / 330)
@@ -977,6 +983,8 @@ export function assemble(nl, state, v, dt, converged, work) {
       fillServo(p, el, id, v, state, nl, warnings)
     } else if (kind === "motorDriver") {
       fillDriver(p, el, id, v, state, nl, warnings)
+    } else if (kind === "robotCar") {
+      fillCar(p, el, id, v, warnings)
     } else {
       pushWarn(warnings, id, "info", "This part isn't in the simulator yet, so it was left unconnected.")
     }
@@ -1589,12 +1597,47 @@ export function runBoards(nl, state, result, v, dt) {
 // VCC, TRIG, ECHO, GND. The echo pin stays at 0 V. pulseIn returns the
 // travel time directly, so the sound pulse is not a circuit transient.
 export function sonarNodes(el, nodeCount) {
-  if (!el || el.type !== "hcsr04") return null
-  var n = pins(el, nodeCount, 4)
+  if (!el) return null
+  var base = -1
+  var dflt = 30
+  if (el.type === "hcsr04") { base = 0; dflt = 30 }
+  else if (el.type === "robotCar") { base = 4; dflt = 100 }
+  else return null
+  var n = pins(el, nodeCount, base + 4)
   if (!n) return null
-  var cm = num(el, "distance", 30)
+  var cm = num(el, "distance", dflt)
   if (cm < 0) cm = 0
-  return { vcc: n[0], trig: n[1], echo: n[2], gnd: n[3], distance: cm }
+  return { vcc: n[base], trig: n[base + 1], echo: n[base + 2], gnd: n[base + 3], distance: cm }
+}
+
+export function fillCar(p, el, id, v, warnings) {
+  var n = pins(el, v.length, 8)
+  p.leftSpin = 0
+  p.rightSpin = 0
+  p.pinging = false
+  if (!n) return
+  var iL = (nodeV(v, n[0]) - nodeV(v, n[1])) / 10
+  var iR = (nodeV(v, n[2]) - nodeV(v, n[3])) / 10
+  p.current = iL
+  p.power = Math.abs(iL * (nodeV(v, n[0]) - nodeV(v, n[1]))) + Math.abs(iR * (nodeV(v, n[2]) - nodeV(v, n[3])))
+  p.leftSpin = clamp(iL / 0.25, -1, 1)
+  p.rightSpin = clamp(iR / 0.25, -1, 1)
+  var ns = sonarNodes(el, v.length)
+  var iV = 0
+  var iT = 0
+  var iE = 0
+  if (ns) {
+    var vg = nodeV(v, ns.gnd)
+    iV = (nodeV(v, ns.vcc) - vg) / 330
+    iT = (nodeV(v, ns.trig) - vg) / 1e6
+    iE = (nodeV(v, ns.echo) - vg) / 1000
+    if (nodeV(v, ns.vcc) - vg > 4) {
+      if (nodeV(v, ns.trig) - vg > 2.5) p.pinging = true
+    } else {
+      pushWarn(warnings, id, "warn", "The distance sensor needs 5V and GND.")
+    }
+  }
+  p.pinCurrents = [iL, -iL, iR, -iR, iV, iT, iE, -(iV + iT + iE)]
 }
 
 export function fillSonar(p, el, id, v, warnings) {
@@ -1754,7 +1797,6 @@ export function sonarEchoUs(nl, v, map, pin, answered) {
   if (echoNode < 0) return 0
   for (var i = 0; i < nl.elements.length; i++) {
     var el = nl.elements[i]
-    if (el.type !== "hcsr04") continue
     var ns = sonarNodes(el, v.length)
     if (!ns || ns.echo !== echoNode) continue
     if (!(nodeV(v, ns.vcc) - nodeV(v, ns.gnd) > 4)) continue
