@@ -771,13 +771,24 @@ function acShape(wave, p) {
   return Math.sin(2 * Math.PI * p)
 }
 
+// Catalog offers 2, 3 or 4 AA cells. A saved bench can still say 10000, and
+// the 2 V Newton cap would then walk for every one of the 100 iterations.
+function aaCells(el) {
+  var cells = num(el, "cells", 2)
+  if (!(cells > 0)) cells = 0
+  if (cells > 4) cells = 4
+  return cells
+}
+
 function acInstant(el, t) {
   if (!isFinite(t)) t = 0
   if (el.type === "acAdapter") {
     var vrms = num(el, "vrms", 12)
     if (!(vrms >= 0)) vrms = 12
+    if (vrms > 24) vrms = 24
     var af = num(el, "freq", 60)
     if (!(af > 0)) af = 60
+    if (af > 5000) af = 5000
     var apeak = vrms * Math.SQRT2
     return { volts: apeak * acShape("sine", acPhase(af, t)), vpeak: apeak, freq: af, r: 1 }
   }
@@ -790,7 +801,8 @@ function acInstant(el, t) {
   if (!(amp >= 0)) amp = 0
   if (amp > 30) amp = 30
   var offset = num(el, "offset", 0)
-  if (!isFinite(offset)) offset = 0
+  if (offset > 10) offset = 10
+  else if (offset < -10) offset = -10
   return { volts: offset + amp * acShape(wave, acPhase(freq, t)), vpeak: amp, freq: freq, r: 50 }
 }
 
@@ -854,8 +866,7 @@ function sourceList(nl, v, state, work) {
         nExtra++
         list.push({ kind: "v", plus: n[0], minus: n[1], volts: 9, r: 1.5, id: id })
       } else if (kind === "aaPack") {
-        var cells = num(el, "cells", 2)
-        if (cells < 0) cells = 0
+        var cells = aaCells(el)
         nExtra++
         list.push({ kind: "v", plus: n[0], minus: n[1], volts: cells * 1.5, r: Math.max(cells, 1) * 0.3, id: id })
       } else if (kind === "benchSupply") {
@@ -1597,8 +1608,7 @@ function fillSource(p, el, id, pv, warnings) {
     return
   }
   if (el.type === "aaPack") {
-    var cells = num(el, "cells", 2)
-    if (cells < 0) cells = 0
+    var cells = aaCells(el)
     var voc = cells * 1.5
     var r = Math.max(cells, 1) * 0.3
     var iPack = (voc - vterm) / r

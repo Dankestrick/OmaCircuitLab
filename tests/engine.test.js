@@ -1863,6 +1863,33 @@ function sameSolve(a, b, label) {
     }
   })
 }
+// A saved bench can carry a finite cell count or AC voltage far past the
+// catalog. Those used to walk the 2 V Newton cap for all 100 iterations.
+var hotPack = solve([
+  { id: "bat", type: "aaPack", nodes: [1, 0], props: { cells: 10000 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } }
+], 2)
+assert.strictEqual(hotPack.converged, true)
+assert.ok(Math.abs(part(hotPack, "bat").volts - 6) < 0.05, "4 cells is the top of the pack, was " + part(hotPack, "bat").volts)
+var hotWall = solve([
+  { id: "wall", type: "acAdapter", nodes: [1, 0], props: { vrms: 10000, freq: 1e8 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } }
+], 2)
+assert.strictEqual(hotWall.converged, true)
+assert.ok(Math.abs(part(hotWall, "wall").vpeak - 24 * Math.SQRT2) < 1e-6, "adapter peaks at 24 V RMS")
+assert.strictEqual(part(hotWall, "wall").freq, 5000)
+var hotOff = solve([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { wave: "sine", freq: 60, amplitude: 0, offset: 10000 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } }
+], 2)
+assert.strictEqual(hotOff.converged, true)
+assert.ok(Math.abs(part(hotOff, "ac").volts - 10 * 1000 / 1050) < 1e-3, "offset stops at 10 V")
+var hotNeg = solve([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { wave: "sine", freq: 60, amplitude: 0, offset: -10000 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } }
+], 2)
+assert.ok(Math.abs(part(hotNeg, "ac").volts - (-10 * 1000 / 1050)) < 1e-3, "offset stops at -10 V")
+
 import(pathToFileURL(path.join(__dirname, "..", "qml", "lib", "worker", "Engine.mjs")).href).then(function (mod) {
   assert.strictEqual(typeof mod.solve, "function")
   assert.strictEqual(typeof mod.createState, "function")
