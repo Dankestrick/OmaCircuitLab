@@ -43,6 +43,7 @@ Item {
 
   // Solid by default: see-through themes make a circuit hard to read.
   property string opacityMode: "solid"     // solid | theme | custom
+  property bool soundOn: false              // buzzers make real sound
   property real customOpacity: 0.85
   readonly property real chromeAlpha: opacityMode === "theme" ? themeBg.a : 1
   readonly property color chromeBg: Qt.rgba(themeBg.r, themeBg.g, themeBg.b, chromeAlpha)
@@ -102,6 +103,43 @@ Item {
         root.robotCar.props.distance = d
         engine.sendMessage({ cmd: "setProp", id: root.robotCar.id, key: "distance", value: d })
       }
+    }
+  }
+
+  // ------------------------------------------------------------------ sound
+  // The highest-pitched sounding buzzer plays, from the nearest tone file.
+  readonly property real buzzHz: {
+    if (!running || !result || !result.parts) return 0
+    var hz = 0
+    for (var i = 0; i < bench.parts.length; i++) {
+      var p = bench.parts[i]
+      if (p.type !== "buzzer") continue
+      var l = result.parts[p.id]
+      // tone() on a pin gives a pitch without averaging enough volts to count as on.
+      if (l && !l.reversed && (l.on || Number(l.freq) > 0)) hz = Math.max(hz, Number(l.freq) || 2300)
+    }
+    return hz
+  }
+  property var toneList: []
+  FileView {
+    path: Qt.resolvedUrl("sounds/tones.json").toString().replace("file://", "")
+    watchChanges: false
+    printErrors: false
+    onLoaded: { try { root.toneList = JSON.parse(text()) } catch (e) { root.toneList = [] } }
+  }
+  function toneUrl(hz) {
+    if (!toneList.length) return ""
+    var best = toneList[0]
+    for (var i = 1; i < toneList.length; i++) if (Math.abs(toneList[i] - hz) < Math.abs(best - hz)) best = toneList[i]
+    return Qt.resolvedUrl("sounds/tone-" + best + ".wav")
+  }
+  // Only exists while sound is wanted, so nothing audio loads otherwise.
+  Loader {
+    active: root.soundOn && root.windowShown
+    source: "SoundPlayer.qml"
+    onLoaded: {
+      item.source = Qt.binding(function () { return root.buzzHz > 0 ? root.toneUrl(root.buzzHz) : "" })
+      item.playing = Qt.binding(function () { return root.buzzHz > 0 && root.toneList.length > 0 })
     }
   }
 
@@ -346,6 +384,7 @@ Item {
       bench = sanitize(data.bench)
       if (data.settings) {
         if (["solid", "theme", "custom"].indexOf(data.settings.opacityMode) >= 0) opacityMode = data.settings.opacityMode
+        soundOn = data.settings.soundOn === true
         if (typeof data.settings.customOpacity === "number") customOpacity = Math.max(0.5, Math.min(1, data.settings.customOpacity))
         if (typeof data.settings.wireColor === "string") wireColor = data.settings.wireColor
         if (typeof data.settings.lessonIndex === "number") lessonIndex = Math.max(0, Math.min(Lessons.lessons.length - 1, data.settings.lessonIndex))
@@ -399,7 +438,7 @@ Item {
     autosaveFile.setText(JSON.stringify({
       version: 1,
       bench: bench,
-      settings: { opacityMode: opacityMode, customOpacity: customOpacity, wireColor: wireColor, lessonIndex: lessonIndex }
+      settings: { opacityMode: opacityMode, customOpacity: customOpacity, wireColor: wireColor, lessonIndex: lessonIndex, soundOn: soundOn }
     }, null, 1))
   }
 
@@ -407,6 +446,7 @@ Item {
   onCustomOpacityChanged: { saveTimer.restart(); applyWindowOpacity() }
   onWireColorChanged: { saveTimer.restart(); benchView.wireColor = wireColor }
   onLessonIndexChanged: saveTimer.restart()
+  onSoundOnChanged: saveTimer.restart()
 
   // Omarchy gives every window a little transparency (and many themes more),
   // which lets busy wallpapers and terminals bleed into the bench. Solid asks
@@ -568,6 +608,7 @@ Item {
             onClicked: root.running ? root.stopSim() : root.startSim()
           }
           ToolButton { label: "↺  Reset"; tip: "Fix burnt parts and empty capacitors"; onClicked: root.resetSim() }
+          ToolButton { label: root.soundOn ? "♪  Sound on" : "♪  Sound off"; selected: root.soundOn; tip: "Let buzzers make real sound"; onClicked: root.soundOn = !root.soundOn }
           ToolButton { label: "↶"; tip: "Undo (Ctrl+Z)"; enabledLook: root.historyIndex > 0; onClicked: root.undo() }
           ToolButton { label: "↷"; tip: "Redo (Ctrl+Shift+Z)"; enabledLook: root.historyIndex < root.history.length - 1; onClicked: root.redo() }
           ToolButton { label: "My circuits"; selected: root.projectsOpen; tip: "Save this circuit under a name, or open one you saved"; onClicked: root.projectsOpen = !root.projectsOpen }

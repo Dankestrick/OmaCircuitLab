@@ -252,13 +252,24 @@ var painters = {
     ctx.beginPath(); ctx.arc(1, -1.3, 1.25, 0, Math.PI * 2); ctx.fill()
     ctx.fillStyle = "#424242"
     ctx.beginPath(); ctx.arc(1, -1.3, 0.25, 0, Math.PI * 2); ctx.fill()
-    label(ctx, "+", 0.1, -1.95, 0.45, "#ef5350")
-    if (live.on) {
-      ctx.strokeStyle = "#ffca28"; ctx.lineWidth = 0.09
-      for (var i = 1; i <= 2; i++) {
-        ctx.beginPath(); ctx.arc(1, -1.3, 1.25 + i * 0.35, -0.6, 0.6); ctx.stroke()
-        ctx.beginPath(); ctx.arc(1, -1.3, 1.25 + i * 0.35, Math.PI - 0.6, Math.PI + 0.6); ctx.stroke()
+    // The + leg, big enough to see which way round it is.
+    ctx.fillStyle = "#ef5350"
+    ctx.beginPath(); ctx.arc(-0.05, -2.05, 0.32, 0, Math.PI * 2); ctx.fill()
+    label(ctx, "+", -0.05, -2.05, 0.46, "#ffffff")
+    if (!live.reversed && (live.on || toNumber(live.freq, 0) > 0)) {
+      // Three rings moving outward and fading, on both sides.
+      var ph = toNumber(live.phase, 0)
+      for (var i = 0; i < 3; i++) {
+        var t = (i + ph) / 3
+        ctx.strokeStyle = "rgba(255,202,40," + (1 - t).toFixed(2) + ")"
+        ctx.lineWidth = 0.12
+        var rr = 1.4 + t * 1.1
+        ctx.beginPath(); ctx.arc(1, -1.3, rr, -0.65, 0.65); ctx.stroke()
+        ctx.beginPath(); ctx.arc(1, -1.3, rr, Math.PI - 0.65, Math.PI + 0.65); ctx.stroke()
       }
+      roundRect(ctx, 0.05, -3.55, 1.9, 0.62, 0.3)
+      ctx.fillStyle = "#ffca28"; ctx.fill()
+      label(ctx, "BZZZ", 1, -3.24, 0.42, "#212121")
     }
   },
   motor: function (ctx, p, live) {

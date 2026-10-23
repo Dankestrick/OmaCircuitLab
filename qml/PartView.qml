@@ -16,6 +16,15 @@ Item {
   property bool selected: false
   property string warning: ""
 
+  // A sounding buzzer's waves move outward. Ticks only while it is on.
+  property real phase: 0
+  Timer {
+    interval: 50
+    repeat: true
+    running: root.running && root.part !== null && root.part.type === "buzzer" && root.live !== null && !root.live.reversed && (root.live.on === true || Number(root.live.freq) > 0)
+    onTriggered: root.phase = (root.phase + 0.08) % 1
+  }
+
   readonly property var box: (revision >= 0 && part) ? Catalog.box(part.type, part.props) : [0, 0, 1, 1]
   readonly property real pad: 2.2   // room for glows and smoke outside the body
 
@@ -46,7 +55,7 @@ Item {
 
     property string paintedKey: ""
     readonly property string key: (root.revision >= 0 && root.part)
-      ? JSON.stringify([root.part.type, root.part.rot, root.part.props, root.live, root.angle, root.cell, root.running])
+      ? JSON.stringify([root.part.type, root.part.rot, root.part.props, root.live, root.angle, root.phase, root.cell, root.running])
       : ""
     onKeyChanged: if (key !== paintedKey) requestPaint()
 
@@ -60,6 +69,7 @@ Item {
       ctx.translate(root.pad - root.box[0], root.pad - root.box[1])
       var live = root.live ? JSON.parse(JSON.stringify(root.live)) : {}
       live.angle = root.angle
+      live.phase = root.phase
       PartArt.draw(ctx, root.part, live, root.running)
       ctx.restore()
     }
