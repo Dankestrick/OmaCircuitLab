@@ -687,6 +687,99 @@ assert.ok(!/cm/.test(distLoose.serial), "TRIG must be a board pin")
 var sonarLesson = stepLesson("sonar", 40)
 console.log("lesson sonar", JSON.stringify(sonarLesson.result.parts.mcu.serial))
 assert.ok(/40 cm/.test(sonarLesson.result.parts.mcu.serial), "lesson sonar reads 40 cm")
+assert.ok(sonarDc.parts.us.pinCurrents && Math.abs(sonarDc.parts.us.pinCurrents[0] + sonarDc.parts.us.pinCurrents[1] + sonarDc.parts.us.pinCurrents[2] + sonarDc.parts.us.pinCurrents[3]) < 1e-9, "sonar pin currents sum to 0")
+
+// --- servo: 100 ohm when powered, angle follows the pin, holds when the wire leaves ---
+var servoDc = solve([
+  duinoElement(""),
+  { id: "sv", type: "servo", nodes: [0, 1, 4], props: {} }
+], 50)
+assert.strictEqual(servoDc.converged, true)
+console.log("servo mA", (servoDc.parts.sv.current * 1000).toFixed(1), "angle", servoDc.parts.sv.angle)
+assert.ok(servoDc.parts.sv.current < -0.045 && servoDc.parts.sv.current > -0.055, "about 50 mA into GND, was " + servoDc.parts.sv.current)
+assert.strictEqual(servoDc.parts.sv.angle, 90)
+assert.ok(!warnLevel(servoDc, "warn", "sv"))
+assert.ok(!warnLevel(servoDc, "info", "sv"))
+assert.ok(Math.abs(servoDc.parts.sv.pinCurrents[0] + servoDc.parts.sv.pinCurrents[1] + servoDc.parts.sv.pinCurrents[2]) < 1e-9)
+
+var servoDark = solve([
+  duinoElement(""),
+  { id: "sv", type: "servo", nodes: [0, 8, 4], props: {} }
+], 50)
+assert.strictEqual(servoDark.parts.sv.angle, 90)
+assert.ok((servoDark.warnings || []).some(function (w) { return w.part === "sv" && w.message === "The servo needs 5V and GND." }))
+
+var servoBare = lessonBare("servo")
+var servoState = E.createState()
+var servoStart = E.solve(servoBare, servoState, 0)
+assert.strictEqual(servoStart.parts.sv.angle, 90)
+var servoAt = []
+for (var sa = 0; sa < 25; sa++) servoAt.push(E.solve(servoBare, servoState, 0.001).parts.sv.angle)
+console.log("servo angles", servoAt[0], servoAt[4], servoAt[24])
+assert.strictEqual(servoAt[4], 0, "sweep writes 0")
+assert.ok(servoAt[24] >= 2 && servoAt[24] <= 4, "sweep moves on, was " + servoAt[24])
+
+var sweepCode = McuLib.example("servo")
+var sweepState = E.createState()
+var sweepNet = net([
+  duinoElement(sweepCode, { 16: 4 }),
+  { id: "sv", type: "servo", nodes: [0, 1, 4], props: {} }
+], 50)
+var held = null
+for (var sw = 0; sw < 8; sw++) held = E.solve(sweepNet, sweepState, 0.001).parts.sv.angle
+assert.strictEqual(held, 0)
+var letGo = E.solve(net([
+  duinoElement(sweepCode, { 16: 7 }),
+  { id: "sv", type: "servo", nodes: [0, 1, 4], props: {} }
+], 50), sweepState, 0.001)
+assert.strictEqual(letGo.parts.sv.angle, 0, "angle stays when the signal wire leaves")
+
+// --- motor driver: outputs follow the inputs, PWM scales them ---
+function driverNet(in1) {
+  return [
+    duinoElement(""),
+    { id: "bat", type: "aaPack", nodes: [3, 0], props: { cells: 4 } },
+    { id: "drv", type: "motorDriver", nodes: [3, 0, in1, 0, 8, 8, 4, 5, 6, 7], props: {} },
+    { id: "ma", type: "motor", nodes: [4, 5], props: {} }
+  ]
+}
+var driven = solve(driverNet(1), 50)
+assert.strictEqual(driven.converged, true)
+console.log("driver A", driven.parts.drv.motorA.toFixed(3), "spin", driven.parts.ma.spin.toFixed(3))
+assert.ok(driven.parts.drv.motorA > 0.7 && driven.parts.drv.motorA < 0.95, "motor A forward " + driven.parts.drv.motorA)
+assert.strictEqual(driven.parts.ma.spin, 1)
+assert.ok(!warnLevel(driven, "info", "drv"))
+assert.ok(!warnLevel(driven, "warn", "drv"))
+
+var reversed = solve([
+  duinoElement(""),
+  { id: "bat", type: "aaPack", nodes: [3, 0], props: { cells: 4 } },
+  { id: "drv", type: "motorDriver", nodes: [3, 0, 0, 1, 8, 8, 4, 5, 6, 7], props: {} },
+  { id: "ma", type: "motor", nodes: [4, 5], props: {} }
+], 50)
+assert.ok(reversed.parts.drv.motorA < -0.7, "motor A reverse " + reversed.parts.drv.motorA)
+assert.strictEqual(reversed.parts.ma.spin, -1)
+
+var noVm = solve([
+  duinoElement(""),
+  { id: "drv", type: "motorDriver", nodes: [0, 0, 1, 0, 8, 8, 4, 5, 6, 7], props: {} }
+], 50)
+assert.strictEqual(noVm.parts.drv.motorA, 0)
+assert.ok((noVm.warnings || []).some(function (w) { return w.part === "drv" && w.message === "Motor driver has no motor power (VM)" }))
+
+var pwmState = E.createState()
+var pwmNet = net([
+  duinoElement(STUB, { 12: 9 }),
+  { id: "bat", type: "aaPack", nodes: [3, 0], props: { cells: 4 } },
+  { id: "drv", type: "motorDriver", nodes: [3, 0, 9, 0, 8, 8, 4, 5, 6, 7], props: {} },
+  { id: "ma", type: "motor", nodes: [4, 5], props: {} }
+], 50)
+E.solve(pwmNet, pwmState, 0)
+pwmState.mcu.mcu.vm.pins[5].mode = "out"
+pwmState.mcu.mcu.vm.pins[5].pwm = 128
+var pwmHalf = E.solve(pwmNet, pwmState, 0)
+console.log("driver pwm", pwmHalf.parts.drv.motorA.toFixed(3))
+assert.ok(pwmHalf.parts.drv.motorA > 0.3 && pwmHalf.parts.drv.motorA < 0.55, "half speed " + pwmHalf.parts.drv.motorA)
 
 console.log("engine tests ok")
 

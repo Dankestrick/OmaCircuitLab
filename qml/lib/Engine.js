@@ -52,7 +52,7 @@ function isTimeDependent(netlist) {
   if (!els) return false
   for (var i = 0; i < els.length; i++) {
     var t = els[i].type
-    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04") return true
+    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver") return true
   }
   return false
 }
@@ -76,8 +76,10 @@ function solve(netlist, state, dt) {
       if (ref >= 0 && ref < nl.nodeCount) v[ref] = 0
     }
 
-    var work = { junc: {}, supplyMode: {}, tmpOn: {}, hitLimit: false, changed: false }
+    var work = { junc: {}, supplyMode: {}, tmpOn: {}, servoOn: {}, driverScale: {}, hitLimit: false, changed: false }
     seedTmp(nl, v, work)
+    seedServo(nl, v, work)
+    seedDriver(nl, v, state, work)
 
     var last = null
     var converged = false
@@ -106,7 +108,7 @@ function solve(netlist, state, dt) {
         work.hitLimit = true
       }
       v = vNew
-      noteModes(built, v, work)
+      noteModes(built, v, work, nl, state)
       last = v
       var scale = 1 + maxAbs(v)
       if (dv < 1e-5 * scale && !work.hitLimit && !work.changed) {
@@ -613,6 +615,17 @@ function seedTmp(nl, v, work) {
   }
 }
 
+function seedServo(nl, v, work) {
+  if (!work.servoOn) work.servoOn = {}
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (el.type !== "servo") continue
+    var n = pins(el, nl.nodeCount, 3)
+    var on = n ? nodeV(v, n[1]) - nodeV(v, n[0]) > 4 : false
+    work.servoOn[partId(el, i)] = on
+  }
+}
+
 function sourceList(nl, v, state, work) {
   var list = []
   var nExtra = 0
@@ -656,6 +669,11 @@ function sourceList(nl, v, state, work) {
       var plan = boardPlan(el, state, id)
       nExtra += plan.outputs.length
       list.push(plan)
+    } else if (kind === "motorDriver") {
+      var ndrv = pins(el, nl.nodeCount, 10)
+      if (!ndrv) { list.push(null); continue }
+      nExtra += 4
+      list.push({ kind: "driver", id: id, pins: ndrv })
     } else {
       list.push(null)
     }
@@ -663,7 +681,7 @@ function sourceList(nl, v, state, work) {
   return { list: list, nExtra: nExtra }
 }
 
-function noteModes(built, v, work) {
+function noteModes(built, v, work, nl, state) {
   work.changed = false
   var srcs = built.sources
   for (var i = 0; i < srcs.length; i++) {
@@ -687,6 +705,21 @@ function noteModes(built, v, work) {
       var now = was ? vsup > 2.5 : vsup > 2.7
       if (now !== was) work.changed = true
       work.tmpOn[s.id] = now
+    }
+    if (s.kind === "servo") {
+      var vServo = nodeV(v, s.vcc) - nodeV(v, s.gnd)
+      var wasServo = work.servoOn[s.id] === true
+      var nowServo = vServo > 4
+      if (nowServo !== wasServo) work.changed = true
+      work.servoOn[s.id] = nowServo
+    }
+    if (s.kind === "driver") {
+      var nowD = driverScales(v, state, nl, s.pins)
+      var prevD = work.driverScale[s.id]
+      var flip = !prevD
+      if (!flip) for (var d = 0; d < 4; d++) if (nowD[d] !== prevD[d]) flip = true
+      if (flip) work.changed = true
+      work.driverScale[s.id] = nowD
     }
   }
 }
@@ -724,6 +757,11 @@ function build(nl, state, v, dt, ref, work) {
       sources.push(src)
       continue
     }
+    if (src && src.kind === "driver") {
+      stampDriver(sys, src, v, state, nl, work)
+      sources.push(src)
+      continue
+    }
     if (src) sources.push(src)
 
     if (state.burnt[id] && (el.type === "led" || el.type === "rgbLed" || el.type === "electrolytic")) continue
@@ -757,6 +795,12 @@ function build(nl, state, v, dt, ref, work) {
       stampG(sys, nSonar.vcc, nSonar.gnd, 1 / 330)
       stampG(sys, nSonar.trig, nSonar.gnd, 1 / 1e6)
       stampG(sys, nSonar.echo, nSonar.gnd, 1 / 1000)
+    } else if (el.type === "servo") {
+      var nServo = pins(el, nl.nodeCount, 3)
+      if (!nServo) continue
+      stampG(sys, nServo[2], nServo[0], 1 / 1e6)
+      if (work.servoOn && work.servoOn[id]) stampG(sys, nServo[1], nServo[0], 1 / 100)
+      sources.push({ kind: "servo", id: id, vcc: nServo[1], gnd: nServo[0] })
     } else if (el.type === "sevenSeg") {
       var n7 = pins(el, nl.nodeCount, 9)
       if (!n7) continue
@@ -929,6 +973,10 @@ function assemble(nl, state, v, dt, converged, work) {
       fillBoard(p, el, id, pv, state, v, warnings)
     } else if (kind === "hcsr04") {
       fillSonar(p, el, id, v, warnings)
+    } else if (kind === "servo") {
+      fillServo(p, el, id, v, state, nl, warnings)
+    } else if (kind === "motorDriver") {
+      fillDriver(p, el, id, v, state, nl, warnings)
     } else {
       pushWarn(warnings, id, "info", "This part isn't in the simulator yet, so it was left unconnected.")
     }
@@ -1553,15 +1601,150 @@ function fillSonar(p, el, id, v, warnings) {
   p.pinging = false
   var ns = sonarNodes(el, v.length)
   if (!ns) return
-  var vcc = nodeV(v, ns.vcc) - nodeV(v, ns.gnd)
-  var i = vcc / 330
-  p.current = i
-  p.power = Math.abs(i * vcc)
+  var vg = nodeV(v, ns.gnd)
+  var vcc = nodeV(v, ns.vcc) - vg
+  var iV = vcc / 330
+  var iT = (nodeV(v, ns.trig) - vg) / 1e6
+  var iE = (nodeV(v, ns.echo) - vg) / 1000
+  p.current = iV
+  p.power = Math.abs(iV * vcc)
+  p.pinCurrents = [iV, iT, iE, -(iV + iT + iE)]
   if (vcc > 4) {
-    if (nodeV(v, ns.trig) - nodeV(v, ns.gnd) > 2.5) p.pinging = true
+    if (nodeV(v, ns.trig) - vg > 2.5) p.pinging = true
   } else {
     pushWarn(warnings, id, "warn", "The distance sensor needs 5V and GND.")
   }
+}
+
+function fillServo(p, el, id, v, state, nl, warnings) {
+  var n = pins(el, v.length, 3)
+  var angle = state.servoAngle && typeof state.servoAngle[id] === "number" && isFinite(state.servoAngle[id]) ? state.servoAngle[id] : 90
+  var i5 = 0
+  var iSig = 0
+  var powered = false
+  if (n) {
+    var vg = nodeV(v, n[0])
+    var v5 = nodeV(v, n[1]) - vg
+    if (v5 > 4) {
+      powered = true
+      i5 = v5 / 100
+    }
+    iSig = (nodeV(v, n[2]) - vg) / 1e6
+    var driven = servoDriveAngle(state, nl, n[2])
+    if (driven !== null) angle = driven
+  }
+  if (!state.servoAngle) state.servoAngle = {}
+  state.servoAngle[id] = angle
+  p.angle = angle
+  p.current = -(i5 + iSig)
+  p.power = Math.abs(i5) * (n ? Math.abs(nodeV(v, n[1]) - nodeV(v, n[0])) : 0)
+  p.pinCurrents = [-(i5 + iSig), i5, iSig]
+  if (!powered) pushWarn(warnings, id, "warn", "The servo needs 5V and GND.")
+}
+
+function servoDriveAngle(state, nl, signalNode) {
+  if (!nl || signalNode < 0) return null
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (el.type !== "omaduino") continue
+    var map = boardMap(el)
+    var slot = state.mcu && state.mcu[partId(el, i)]
+    var srcPins = slot && slot.vm ? slot.vm.pins : null
+    if (!srcPins) continue
+    for (var s = 0; s < 20; s++) {
+      if (map.pins[s] !== signalNode) continue
+      var src = srcPins[s]
+      if (!src || src.servo === null || src.servo === undefined) continue
+      var ang = Number(src.servo)
+      if (isFinite(ang)) return ang
+    }
+  }
+  return null
+}
+
+function seedDriver(nl, v, state, work) {
+  if (!work.driverScale) work.driverScale = {}
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (el.type !== "motorDriver") continue
+    var n = pins(el, nl.nodeCount, 10)
+    if (!n) continue
+    work.driverScale[partId(el, i)] = driverScales(v, state, nl, n)
+  }
+}
+
+function driverScales(v, state, nl, n) {
+  var scales = []
+  for (var i = 0; i < 4; i++) scales.push(driverScale(v, state, nl, n[1], n[2 + i]))
+  return scales
+}
+
+function driverScale(v, state, nl, gnd, inNode) {
+  var pwm = pwmOnNode(state, nl, inNode)
+  if (pwm !== null) {
+    if (pwm < 0) pwm = 0
+    if (pwm > 255) pwm = 255
+    return pwm / 255
+  }
+  return nodeV(v, inNode) - nodeV(v, gnd) > 2.5 ? 1 : 0
+}
+
+function pwmOnNode(state, nl, node) {
+  if (!nl || !state) return null
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (el.type !== "omaduino") continue
+    var map = boardMap(el)
+    var slot = state.mcu && state.mcu[partId(el, i)]
+    var srcPins = slot && slot.vm ? slot.vm.pins : null
+    if (!srcPins) continue
+    for (var p = 0; p < 20; p++) {
+      if (map.pins[p] !== node) continue
+      var src = srcPins[p]
+      if (!src || src.pwm === null || src.pwm === undefined) continue
+      var duty = Number(src.pwm)
+      if (isFinite(duty)) return duty
+    }
+  }
+  return null
+}
+
+function stampDriver(sys, src, v, state, nl, work) {
+  var n = src.pins
+  var gnd = n[1]
+  var vm = nodeV(v, n[0]) - nodeV(v, gnd)
+  var scales = work.driverScale && work.driverScale[src.id]
+  for (var i = 0; i < 4; i++) {
+    stampG(sys, n[2 + i], gnd, 1 / 100000)
+    var scale = scales && typeof scales[i] === "number" ? scales[i] : 0
+    stampVsrc(sys, n[6 + i], gnd, vm * scale, 1)
+  }
+}
+
+function fillDriver(p, el, id, v, state, nl, warnings) {
+  var n = pins(el, v.length, 10)
+  p.motorA = 0
+  p.motorB = 0
+  if (!n) return
+  var vg = nodeV(v, n[1])
+  var vm = nodeV(v, n[0]) - vg
+  var scales = driverScales(v, state, nl, n)
+  var iIn = []
+  var iOut = []
+  for (var i = 0; i < 4; i++) {
+    iIn.push((nodeV(v, n[2 + i]) - vg) / 100000)
+    iOut.push((nodeV(v, n[6 + i]) - vg) - vm * scales[i])
+  }
+  var sum = iIn[0] + iIn[1] + iIn[2] + iIn[3] + iOut[0] + iOut[1] + iOut[2] + iOut[3]
+  p.pinCurrents = [0, -sum, iIn[0], iIn[1], iIn[2], iIn[3], iOut[0], iOut[1], iOut[2], iOut[3]]
+  p.current = 0
+  p.power = 0
+  var denom = Math.abs(vm) < 0.05 ? 0 : vm
+  p.motorA = denom === 0 ? 0 : clamp((nodeV(v, n[6]) - nodeV(v, n[7])) / denom, -1, 1)
+  p.motorB = denom === 0 ? 0 : clamp((nodeV(v, n[8]) - nodeV(v, n[9])) / denom, -1, 1)
+  var driving = false
+  for (var h = 0; h < 4; h++) if (scales[h] > 0) driving = true
+  if (vm < 3 && driving) pushWarn(warnings, id, "warn", "Motor driver has no motor power (VM)")
 }
 
 function sonarEchoUs(nl, v, map, pin, answered) {
