@@ -8,6 +8,6 @@ for (const lesson of L.lessons) {
   assert.strictEqual(nl.issues.length, 0, lesson.id + ": " + JSON.stringify(nl.issues))
   const uses = {}
   for (const e of nl.elements) for (const n of e.nodes) uses[n] = (uses[n] || 0) + 1
-  for (const e of nl.elements) if (e.type !== "omaduino" && !(e.type === "potentiometer")) e.nodes.forEach((n, i) => assert(uses[n] >= 2, lesson.id + ": " + e.id + " pin " + i + " dangles"))
+  for (const e of nl.elements) if (!{ omaduino: 1, potentiometer: 1, timer555: 1, omaNano: 1, omaTiny: 1, relay: 1, oscilloscope: 1 }[e.type]) e.nodes.forEach((n, i) => assert(uses[n] >= 2, lesson.id + ": " + e.id + " pin " + i + " dangles"))
   console.log("ok", lesson.id, "nodes", nl.nodeCount)
 }

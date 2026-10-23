@@ -801,6 +801,243 @@ var lessons = [
       if (Math.abs(l.leftSpin || 0) > 0.1 || Math.abs(l.rightSpin || 0) > 0.1) return { done: true, hint: "Your robot is driving! Open the arena, try the Maze, and tune the turn timing in the code." }
       return { done: false, hint: "Check the motor driver wiring and that the battery reaches VM." }
     }
+  },
+  {
+    id: "acscope",
+    title: "See AC on an oscilloscope",
+    idea: "A battery pushes current one way all the time (DC). AC swings back and forth: + then −, over and over. A multimeter can't show that shape, but an oscilloscope draws voltage over time, so you can watch the wave.",
+    steps: [
+      "Wire the function generator to the rails, then a 1 kΩ resistor across them.",
+      "Clip the scope's GND to the − side and CH1 to the + side of the resistor.",
+      "Run and watch the wave. Scroll on the generator to change its frequency."
+    ],
+    build: function () {
+      var p = [], w = []
+      p.push(part("gen", "acSource", { x: 0, y: 10 }, 0, { wave: "sine", freq: 60, amplitude: 5 }))
+      w.push(wire("wgp", { x: 1, y: 10 }, rail("top", "+", 3), "red"))
+      w.push(wire("wgn", { x: 3, y: 10 }, rail("top", "−", 3), "black"))
+      p.push(part("r1", "resistor", H(10, "a"), 0, { ohms: 1000 }))
+      w.push(wire("w1", rail("top", "+", 10), H(10, "b"), "red"))
+      w.push(wire("w2", H(14, "d"), rail("top", "−", 15), "black"))
+      p.push(part("scope", "oscilloscope", { x: 30, y: 29 }, 0, { timePerDiv: 0.005, voltsPerDiv: 2 }))
+      w.push(wire("wc1", { x: 31, y: 29 }, H(10, "e"), "yellow"))
+      w.push(wire("wcg", { x: 37, y: 29 }, H(14, "e"), "black"))
+      return { parts: p, wires: w }
+    },
+    check: function (ctx) {
+      var sc = partsOf(ctx, "oscilloscope")
+      if (sc.length === 0) return { done: false, hint: "Add an oscilloscope from Meters." }
+      var r = needRun(ctx); if (r) return r
+      var l = liveOf(ctx, sc[0])
+      if (l.vpp1 > 1 && l.freq1 > 0) return { done: true, hint: "That's AC: it swings " + l.vpp1.toFixed(1) + " V from top to bottom, " + Math.round(l.freq1) + " times a second." }
+      return { done: false, hint: "Clip GND to the − side and CH1 to the + side of the resistor." }
+    }
+  },
+  {
+    id: "rectifier",
+    title: "Turn AC into DC",
+    idea: "Most electronics need DC. A bridge rectifier (four diodes) flips the negative half of AC upright, so it only ever comes out + on its + leg. A big capacitor then fills in the gaps between the bumps, giving almost steady DC.",
+    steps: [
+      "Wire the AC adapter to the bridge's two ~ legs, and its + and − legs to the rails.",
+      "Add a 1000 µF capacitor and a 1 kΩ load across the rails.",
+      "Watch the rails on the scope, then remove the capacitor and look again."
+    ],
+    build: function () {
+      var p = [], w = []
+      p.push(part("ac", "acAdapter", { x: 2, y: 10 }, 0, { vrms: 12 }))
+      p.push(part("br", "bridgeRectifier", H(10, "c"), 0))
+      w.push(wire("wa1", { x: 2, y: 10 }, H(10, "b"), "yellow"))
+      w.push(wire("wa2", { x: 4, y: 10 }, H(11, "b"), "yellow"))
+      w.push(wire("wp", H(12, "a"), rail("top", "+", 12), "red"))
+      w.push(wire("wn", H(13, "a"), rail("top", "−", 14), "black"))
+      p.push(part("c1", "electrolytic", H(20, "c"), 0, { farads: 1e-3, ratedVolts: 25 }))
+      w.push(wire("wc1", rail("top", "+", 20), H(20, "a"), "red"))
+      w.push(wire("wc2", H(21, "a"), rail("top", "−", 21), "black"))
+      p.push(part("rl", "resistor", H(25, "c"), 0, { ohms: 1000 }))
+      w.push(wire("wl1", rail("top", "+", 26), H(25, "a"), "red"))
+      w.push(wire("wl2", H(29, "a"), rail("top", "−", 29), "black"))
+      p.push(part("scope", "oscilloscope", { x: 30, y: 29 }, 0, { timePerDiv: 0.005, voltsPerDiv: 5 }))
+      w.push(wire("ws1", { x: 31, y: 29 }, H(20, "e"), "yellow"))
+      w.push(wire("wsg", { x: 37, y: 29 }, H(21, "e"), "black"))
+      return { parts: p, wires: w }
+    },
+    check: function (ctx) {
+      if (partsOf(ctx, "bridgeRectifier").length === 0) return { done: false, hint: "Add a bridge rectifier from AC power & signals." }
+      var r = needRun(ctx); if (r) return r
+      var sc = partsOf(ctx, "oscilloscope"), l = sc.length ? liveOf(ctx, sc[0]) : {}
+      if (l.vrms1 > 8 && l.vpp1 < 3) return { done: true, hint: "Steady DC: about " + l.vrms1.toFixed(1) + " V with only " + l.vpp1.toFixed(2) + " V of ripple. Take the capacitor out and it bumps up and down." }
+      if (l.vrms1 > 3) return { done: false, hint: "It's all + now, but bumpy. A big capacitor across the rails smooths it." }
+      return { done: false, hint: "Put the scope's CH1 on the + rail and GND on the − rail." }
+    }
+  },
+  {
+    id: "timer555",
+    title: "Blink with a 555 timer",
+    idea: "The 555 charges a capacitor through two resistors, and when it's ⅔ full it empties it and starts again. OUT flips each time, so an LED blinks by itself: no code at all. Bigger resistors or capacitor blink slower.",
+    steps: [
+      "Put the 555 across the center channel. Power VCC and RESET from +, GND to −.",
+      "1 kΩ from + to DIS, 10 kΩ from DIS to THR, and join THR to TRIG.",
+      "100 µF from TRIG to −, and an LED with 470 Ω on OUT.",
+      "Run: the LED blinks a little faster than once a second."
+    ],
+    build: function () {
+      var p = [], w = []
+      battery(p, w)
+      w.push(wire("wlp", rail("top", "+", 60), rail("bottom", "+", 60), "red"))
+      w.push(wire("wln", rail("top", "−", 59), rail("bottom", "−", 59), "black"))
+      p.push(part("u1", "timer555", H(20, "f"), 0))
+      w.push(wire("wv", H(20, "a"), rail("top", "+", 20), "red"))
+      w.push(wire("wg", H(20, "j"), rail("bottom", "−", 20), "black"))
+      w.push(wire("wrs", H(23, "j"), rail("bottom", "+", 23), "red"))
+      p.push(part("r1", "resistor", H(26, "b"), 0, { ohms: 1000 }))
+      w.push(wire("wr1", rail("top", "+", 26), H(26, "a"), "red"))
+      w.push(wire("wr1d", H(30, "c"), H(21, "c"), "orange"))
+      p.push(part("r2", "resistor", H(33, "b"), 0, { ohms: 10000 }))
+      w.push(wire("wr2a", H(33, "d"), H(21, "d"), "orange"))
+      w.push(wire("wr2b", H(37, "d"), H(22, "d"), "blue"))
+      w.push(wire("wtt", H(22, "a"), H(21, "i"), "blue"))
+      p.push(part("c1", "electrolytic", H(28, "h"), 0, { farads: 1e-4 }))
+      w.push(wire("wc1", H(28, "g"), H(21, "g"), "blue"))
+      w.push(wire("wc2", H(29, "i"), rail("bottom", "−", 29), "black"))
+      w.push(wire("wo", H(22, "h"), H(35, "h"), "green"))
+      p.push(part("r3", "resistor", H(35, "i"), 0, { ohms: 470 }))
+      p.push(part("d1", "led", H(39, "j"), 0, { color: "yellow" }))
+      w.push(wire("wd", H(40, "g"), rail("bottom", "−", 41), "black"))
+      return { parts: p, wires: w }
+    },
+    check: function (ctx) {
+      var t = partsOf(ctx, "timer555")
+      if (t.length === 0) return { done: false, hint: "Add a 555 timer from Diodes & transistors." }
+      var r = needRun(ctx); if (r) return r
+      var l = liveOf(ctx, t[0])
+      if (l.freq > 0) return { done: true, hint: "Blinking about " + l.freq.toFixed(2) + " times a second. Scroll the 10 kΩ down to 1 kΩ and it speeds up." }
+      return { done: false, hint: "Give it a moment to charge. If nothing blinks, check THR is joined to TRIG and the capacitor goes to −." }
+    }
+  },
+  {
+    id: "relay",
+    title: "Switch with a relay",
+    idea: "A relay is a switch flipped by an electromagnet. A small current through its coil pulls a contact across, connecting COM to NO. The coil side and the switch side are separate, so a tiny button can switch something big and far away.",
+    steps: [
+      "Button from + to the relay's coil +, and coil − to the − rail.",
+      "Relay COM to +, and from NO go 470 Ω → LED → −.",
+      "Run and hold the button: the relay clicks on and the LED lights."
+    ],
+    build: function () {
+      var p = [], w = []
+      battery(p, w)
+      w.push(wire("wbr", rail("top", "−", 4), rail("bottom", "−", 4), "black"))
+      w.push(wire("wlp", rail("top", "+", 60), rail("bottom", "+", 60), "red"))
+      p.push(part("b1", "pushButton", H(14, "e"), 1))
+      w.push(wire("w1", rail("top", "+", 14), H(14, "a"), "red"))
+      p.push(part("k1", "relay", H(20, "h"), 0))
+      w.push(wire("wk", H(14, "g"), H(20, "g"), "orange"))
+      w.push(wire("wkn", H(21, "j"), rail("bottom", "−", 21), "black"))
+      w.push(wire("wcom", H(22, "i"), rail("bottom", "+", 22), "red"))
+      p.push(part("r1", "resistor", H(23, "j"), 0, { ohms: 470 }))
+      p.push(part("d1", "led", H(27, "i"), 0, { color: "green" }))
+      w.push(wire("wd", H(28, "g"), rail("bottom", "−", 28), "black"))
+      return { parts: p, wires: w }
+    },
+    check: function (ctx) {
+      var k = partsOf(ctx, "relay")
+      if (k.length === 0) return { done: false, hint: "Add a relay from Outputs & motion." }
+      var r = needRun(ctx); if (r) return r
+      if (liveOf(ctx, k[0]).on && litLeds(ctx) > 0) return { done: true, hint: "Click! The coil pulls COM over to NO and the LED's circuit closes." }
+      return { done: false, hint: "Hold the button down to power the coil." }
+    }
+  },
+  {
+    id: "reg7805",
+    title: "5 V from a regulator",
+    idea: "Chips want exactly 5 V, but batteries give 9 V and sag as they drain. A 7805 regulator takes anything from about 7 V up and holds its OUT leg at a steady 5 V. The extra voltage turns into heat.",
+    steps: [
+      "7805 with IN on +, GND on −.",
+      "From OUT: 220 Ω → LED → −.",
+      "Measure OUT with the multimeter on V: 5.00 V."
+    ],
+    build: function () {
+      var p = [], w = []
+      battery(p, w)
+      p.push(part("u1", "regulator7805", H(20, "c"), 0))
+      w.push(wire("wi", rail("top", "+", 20), H(20, "a"), "red"))
+      w.push(wire("wg", H(21, "a"), rail("top", "−", 21), "black"))
+      p.push(part("r1", "resistor", H(22, "a"), 0, { ohms: 220 }))
+      p.push(part("d1", "led", H(26, "c"), 0, { color: "blue" }))
+      w.push(wire("wd", H(27, "d"), rail("top", "−", 27), "black"))
+      p.push(part("m1", "multimeter", { x: 75, y: 10 }, 0, { mode: "V" }))
+      w.push(wire("wm1", { x: 76, y: 10 }, H(22, "e"), "red"))
+      w.push(wire("wm2", { x: 79, y: 10 }, H(21, "e"), "black"))
+      return { parts: p, wires: w }
+    },
+    check: function (ctx) {
+      if (partsOf(ctx, "regulator7805").length === 0) return { done: false, hint: "Add a 5 V regulator from Power." }
+      var r = needRun(ctx); if (r) return r
+      var v = meterReading(ctx, "V")
+      if (v !== null && Math.abs(v - 5) < 0.2) return { done: true, hint: "A steady " + v.toFixed(2) + " V. Swap the battery for the bench supply and turn it from 7 to 15 V: OUT stays at 5." }
+      return { done: false, hint: "Measure between OUT and GND with the multimeter on V." }
+    }
+  },
+  {
+    id: "nano",
+    title: "Program the OmaNano",
+    idea: "The OmaNano is a smaller OmaDuino that plugs straight into the breadboard, across the center channel. It runs the same code with the same pin names, so Blink works unchanged.",
+    steps: [
+      "Put the OmaNano across the center channel.",
+      "From D13: 220 Ω → LED → −, and wire its GND to the − rail.",
+      "Load Blink, Upload, and Run."
+    ],
+    build: function () {
+      var p = [], w = []
+      p.push(part("nano", "omaNano", H(30, "f"), 0, { code: Mcu.example("blink") }))
+      w.push(wire("wg", H(39, "a"), rail("top", "−", 39), "black"))
+      p.push(part("r1", "resistor", H(30, "a"), 0, { ohms: 220, span: 3 }))
+      p.push(part("d1", "led", H(33, "c"), 0, { color: "red" }))
+      w.push(wire("wd", H(34, "d"), rail("top", "−", 34), "black"))
+      return { parts: p, wires: w }
+    },
+    check: function (ctx) {
+      var b = partsOf(ctx, "omaNano")
+      if (b.length === 0) return { done: false, hint: "Add an OmaNano from Microcontroller & robotics." }
+      if (!b[0].props.code) return { done: false, hint: "Select the OmaNano, open the code editor, load Blink and press Upload." }
+      var r = needRun(ctx); if (r) return r
+      var l = liveOf(ctx, b[0])
+      if (l.error) return { done: false, hint: "The sketch stopped: " + l.error }
+      return { done: true, hint: "Blinking. Change delay(500) to delay(100) and Upload again." }
+    }
+  },
+  {
+    id: "tiny",
+    title: "A computer on one chip (OmaTiny)",
+    idea: "The OmaTiny is a whole microcontroller in an 8-legged chip. It has no USB power and no helpers: you give it 3 to 5 V on VCC and GND yourself. Its pins are numbered 0 to 4 in code.",
+    steps: [
+      "Put the OmaTiny across the center channel. VCC to +, GND to −, from a 3-cell AA pack (4.5 V).",
+      "From PB0 (pin 0): 220 Ω → LED → −.",
+      "Load \"Tiny blink\", Upload, and Run."
+    ],
+    build: function () {
+      var p = [], w = []
+      p.push(part("pack", "aaPack", { x: 2, y: 10 }, 0, { cells: 3, volts: 4.5 }))
+      w.push(wire("wbp", { x: 2, y: 10 }, rail("top", "+", 3), "red"))
+      w.push(wire("wbn", { x: 4, y: 10 }, rail("top", "−", 3), "black"))
+      w.push(wire("wbr", rail("top", "−", 4), rail("bottom", "−", 4), "black"))
+      p.push(part("tiny", "omaTiny", H(20, "f"), 0, { code: Mcu.example("tinyblink") }))
+      w.push(wire("wv", H(20, "a"), rail("top", "+", 20), "red"))
+      w.push(wire("wg", H(23, "j"), rail("bottom", "−", 23), "black"))
+      p.push(part("r1", "resistor", H(23, "a"), 0, { ohms: 220, span: 3 }))
+      p.push(part("d1", "led", H(26, "c"), 0, { color: "green" }))
+      w.push(wire("wd", H(27, "d"), rail("top", "−", 27), "black"))
+      return { parts: p, wires: w }
+    },
+    check: function (ctx) {
+      var b = partsOf(ctx, "omaTiny")
+      if (b.length === 0) return { done: false, hint: "Add an OmaTiny from Microcontroller & robotics." }
+      if (!b[0].props.code) return { done: false, hint: "Select the OmaTiny, open the code editor, load Tiny blink and press Upload." }
+      var r = needRun(ctx); if (r) return r
+      var l = liveOf(ctx, b[0])
+      if (l.error) return { done: false, hint: l.error }
+      return { done: true, hint: "One chip, one LED, blinking. That's how tiny gadgets are built." }
+    }
   }
 ]
 
