@@ -5,7 +5,8 @@ qml/lib/*.js stays the source of truth for the QML UI and the Node tests.
 Quickshell's WorkerScript ignores `.import` in a plain script and runs an
 `.mjs` file as an ES module, so Run loads qml/lib/worker/EngineWorker.mjs.
 
-Mcu.js is left out. Lesson 1 does not need the interpreter.
+Mcu.js is included because the board solver calls it. The worker
+imports Engine, and Engine imports Mcu.
 """
 
 import pathlib
@@ -15,7 +16,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LIB = ROOT / "qml" / "lib"
 OUT = LIB / "worker"
-SOURCES = ("Catalog.js", "Engine.js", "EngineWorker.js")
+SOURCES = ("Catalog.js", "Mcu.js", "Engine.js", "EngineWorker.js")
 
 IMPORT_RE = re.compile(r'^\.import "([A-Za-z0-9_]+)\.js" as ([A-Za-z0-9_]+)\s*$')
 DECL_RE = re.compile(r"^(?:function |var )")

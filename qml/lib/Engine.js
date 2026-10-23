@@ -1,5 +1,6 @@
 .pragma library
 .import "Catalog.js" as Catalog
+.import "Mcu.js" as Mcu
 
 // DC and one-step transient solver for the breadboard.
 // Modified nodal analysis, dense Gaussian elimination with partial pivoting,
@@ -40,7 +41,9 @@ function createState() {
     burnWhy: {},
     spin: {},
     nodeVolts: null,
-    nodeCount: -1
+    nodeCount: -1,
+    mcu: {},
+    servoAngle: {}
   }
 }
 
@@ -49,7 +52,7 @@ function isTimeDependent(netlist) {
   if (!els) return false
   for (var i = 0; i < els.length; i++) {
     var t = els[i].type
-    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer") return true
+    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino") return true
   }
   return false
 }
@@ -64,6 +67,7 @@ function solve(netlist, state, dt) {
     if (!nl) return fail("Add a circuit first.")
     if (nl.nodeCount > 500) return fail("This circuit is too big for the simulator.")
     if (nl.ground < 0 && !isPowered(nl) && !hasOhmProbe(nl)) return unpowered(nl, state)
+    syncBoards(nl, state)
 
     var ref = chooseRef(nl)
     var v = zeros(nl.nodeCount)
@@ -129,6 +133,8 @@ function ensureState(state) {
   if (!state.burnt) state.burnt = {}
   if (!state.burnWhy) state.burnWhy = {}
   if (!state.spin) state.spin = {}
+  if (!state.mcu) state.mcu = {}
+  if (!state.servoAngle) state.servoAngle = {}
 }
 
 function normalize(netlist) {
@@ -152,7 +158,7 @@ function normalize(netlist) {
 function isPowered(nl) {
   for (var i = 0; i < nl.elements.length; i++) {
     var t = nl.elements[i].type
-    if (t === "battery9v" || t === "aaPack" || t === "benchSupply") return true
+    if (t === "battery9v" || t === "aaPack" || t === "benchSupply" || t === "omaduino") return true
   }
   return false
 }
@@ -171,7 +177,12 @@ function chooseRef(nl) {
     for (var i = 0; i < nl.elements.length; i++) {
       var el = nl.elements[i]
       var t = el.type
-      if (t !== "battery9v" && t !== "aaPack" && t !== "benchSupply") continue
+      if (t !== "battery9v" && t !== "aaPack" && t !== "benchSupply" && t !== "omaduino") continue
+      if (t === "omaduino") {
+        var nb = pins(el, nl.nodeCount, 1)
+        if (nb) return nb[0]
+        continue
+      }
       var n = pins(el, nl.nodeCount, 2)
       if (n) return n[1]
     }
@@ -640,6 +651,10 @@ function sourceList(nl, v, state, work) {
       } else {
         list.push({ kind: "tmpOff", vp: n[0], vg: n[2], out: n[1], id: id })
       }
+    } else if (kind === "omaduino") {
+      var plan = boardPlan(el, state, id)
+      nExtra += plan.outputs.length
+      list.push(plan)
     } else {
       list.push(null)
     }
@@ -700,6 +715,11 @@ function build(nl, state, v, dt, ref, work) {
     }
     if (src && src.kind === "tmpOff") {
       stampI(sys, src.vg, src.vp, 50e-6)
+      sources.push(src)
+      continue
+    }
+    if (src && src.kind === "board") {
+      stampBoard(sys, src)
       sources.push(src)
       continue
     }
@@ -898,6 +918,8 @@ function assemble(nl, state, v, dt, converged, work) {
       fillMeter(p, el, id, pv, nl, warnings)
     } else if (kind === "tmp36") {
       fillTmp(p, el, id, pv, work, warnings)
+    } else if (kind === "omaduino") {
+      fillBoard(p, el, id, pv, state, v, warnings)
     } else {
       pushWarn(warnings, id, "info", "This part isn't in the simulator yet, so it was left unconnected.")
     }
@@ -1312,4 +1334,167 @@ function fmt(v, unit) {
 function trimNum(s) {
   if (s.indexOf(".") < 0) return s
   return s.replace(/0+$/, "").replace(/\.$/, "")
+}
+
+// ---------------------------------------------------------------------------
+// OmaDuino. The VM is cached on state and only rebuilt when the sketch text
+// changes. This pass stamps the pins; the sketch itself advances in a later step.
+
+function syncBoards(nl, state) {
+  if (!state.mcu) state.mcu = {}
+  var live = {}
+  for (var i = 0; i < nl.elements.length; i++) {
+    var el = nl.elements[i]
+    if (el.type !== "omaduino") continue
+    var id = partId(el, i)
+    live[id] = true
+    var code = el.props && el.props.code ? String(el.props.code) : ""
+    var slot = state.mcu[id]
+    if (slot && slot.code === code) continue
+    if (!code) {
+      state.mcu[id] = { code: "", vm: null, error: "", errorLine: 0 }
+      continue
+    }
+    var compiled = Mcu.compile(code)
+    if (!compiled || !compiled.ok) {
+      var err = compiled && compiled.errors && compiled.errors[0] ? compiled.errors[0] : { line: 1, message: "This sketch didn't compile." }
+      state.mcu[id] = { code: code, vm: null, error: String(err.message || "This sketch didn't compile."), errorLine: err.line || 1 }
+    } else {
+      state.mcu[id] = { code: code, vm: Mcu.create(compiled.program), error: "", errorLine: 0 }
+    }
+  }
+  for (var k in state.mcu) if (!live[k]) delete state.mcu[k]
+}
+
+function boardMap(el) {
+  var map = []
+  for (var i = 0; i < 20; i++) map.push(-1)
+  var gnd = -1
+  var gnds = []
+  var v5 = -1
+  var v33 = -1
+  var nodes = el && el.nodes ? el.nodes : []
+  for (var n = 0; n < nodes.length; n++) {
+    var node = nodes[n]
+    if (typeof node !== "number" || !isFinite(node)) continue
+    node = node | 0
+    var name = (typeof Catalog !== "undefined" && Catalog.mcuPinNumber) ? Catalog.mcuPinNumber(n) : null
+    if (name === "gnd") {
+      gnds.push(node)
+      if (gnd < 0) gnd = node
+    } else if (name === "5v") v5 = node
+    else if (name === "3v3") v33 = node
+    else if (typeof name === "number" && name >= 0 && name < 20) map[name] = node
+  }
+  return { gnd: gnd, gnds: gnds, v5: v5, v33: v33, pins: map }
+}
+
+function boardPlan(el, state, id) {
+  var map = boardMap(el)
+  var slot = state.mcu && state.mcu[id]
+  var pinStates = slot && slot.vm ? slot.vm.pins : null
+  var outputs = []
+  if (map.gnd >= 0) {
+    if (map.v5 >= 0) outputs.push({ kind: "rail5" })
+    if (map.v33 >= 0) outputs.push({ kind: "rail33" })
+    for (var p = 0; p < 20; p++) {
+      if (map.pins[p] < 0) continue
+      var mode = pinStates && pinStates[p] ? pinStates[p].mode : "in"
+      if (mode === "out") outputs.push({ kind: "gpio", pin: p })
+    }
+  }
+  return { kind: "board", id: id, map: map, outputs: outputs, pinStates: pinStates }
+}
+
+function gpioVolts(pin) {
+  if (!pin) return 0
+  if (pin.pwm !== null && pin.pwm !== undefined && isFinite(Number(pin.pwm))) {
+    var duty = Number(pin.pwm)
+    if (duty < 0) duty = 0
+    if (duty > 255) duty = 255
+    return 5 * duty / 255
+  }
+  return pin.level ? 5 : 0
+}
+
+function gpioName(p) {
+  if (p >= 14) return "A" + (p - 14)
+  return "D" + p
+}
+
+function stampBoard(sys, src) {
+  var map = src.map
+  var gnd = map.gnd
+  if (gnd < 0) return
+  for (var g = 0; g < map.gnds.length; g++) stampG(sys, map.gnds[g], gnd, 1 / 0.05)
+  var pins = src.pinStates
+  for (var i = 0; i < src.outputs.length; i++) {
+    var o = src.outputs[i]
+    if (o.kind === "rail5") stampVsrc(sys, map.v5, gnd, 5, 0.2)
+    else if (o.kind === "rail33") stampVsrc(sys, map.v33, gnd, 3.3, 1)
+    else stampVsrc(sys, map.pins[o.pin], gnd, gpioVolts(pins && pins[o.pin]), 25)
+  }
+  for (var p = 0; p < 20; p++) {
+    var node = map.pins[p]
+    if (node < 0) continue
+    var pin = pins && pins[p] ? pins[p] : null
+    var mode = pin && pin.mode ? pin.mode : "in"
+    if (mode === "out") continue
+    if (mode === "pullup" && map.v5 >= 0) stampG(sys, node, map.v5, 1 / 35000)
+    else stampG(sys, node, gnd, 1 / 1e7)
+  }
+}
+
+function fillBoard(p, el, id, pv, state, v, warnings) {
+  var map = boardMap(el)
+  var slot = state.mcu && state.mcu[id]
+  var gndV = map.gnd >= 0 ? nodeV(v, map.gnd) : 0
+  var i5 = 0
+  var i33 = 0
+  if (map.v5 >= 0 && map.gnd >= 0) {
+    var v5 = nodeV(v, map.v5) - gndV
+    i5 = (5 - v5) / 0.2
+    if (i5 > 0.5) pushWarn(warnings, id, "warn", "The 5V pin is past its 0.5 A limit.")
+  }
+  if (map.v33 >= 0 && map.gnd >= 0) {
+    var v33 = nodeV(v, map.v33) - gndV
+    i33 = (3.3 - v33) / 1
+    if (i33 > 0.05) pushWarn(warnings, id, "warn", "The 3.3V pin is past its 0.05 A limit.")
+  }
+  var srcPins = slot && slot.vm ? slot.vm.pins : null
+  var pins = []
+  var iGpio = 0
+  for (var i = 0; i < 20; i++) {
+    var src = srcPins && srcPins[i] ? srcPins[i] : { mode: "in", level: 0, pwm: null, servo: null, tone: null }
+    pins.push({
+      mode: src.mode || "in",
+      level: src.level ? 1 : 0,
+      pwm: src.pwm === undefined ? null : src.pwm,
+      servo: src.servo === undefined ? null : src.servo,
+      tone: src.tone === undefined ? null : src.tone
+    })
+    if (src.mode === "out" && map.pins[i] >= 0 && map.gnd >= 0) {
+      var ideal = gpioVolts(src)
+      var iPin = (ideal - (nodeV(v, map.pins[i]) - gndV)) / 25
+      iGpio += iPin
+      var ma = Math.abs(iPin) * 1000
+      if (ma > 40) pushWarn(warnings, id, "warn", "Pin " + gpioName(i) + " is giving " + Math.round(ma) + " mA; add a resistor (220 Ω for an LED).")
+      var node = map.pins[i]
+      if (node === map.gnd || (map.v5 >= 0 && node === map.v5)) {
+        pushWarn(warnings, id, "danger", "Pin " + gpioName(i) + " is shorted straight to " + (node === map.gnd ? "GND" : "5V") + ".")
+      }
+    }
+  }
+  p.pins = pins
+  p.serial = slot && slot.vm && slot.vm.serial ? String(slot.vm.serial) : ""
+  p.serialActive = false
+  p.error = slot && slot.error ? slot.error : ""
+  p.errorLine = slot && slot.error ? (slot.errorLine || 0) : 0
+  if (slot && slot.vm && slot.vm.error) {
+    p.error = slot.vm.error
+    p.errorLine = slot.vm.errorLine || 0
+  }
+  p.running = !!(slot && slot.vm && !p.error)
+  p.current = i5 + i33 + iGpio
+  p.power = 0
 }

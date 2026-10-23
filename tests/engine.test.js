@@ -482,6 +482,77 @@ var segDead = solve([
 assert.strictEqual(segDead.parts.disp.segments.a, 0)
 assert.ok(Math.abs(segDead.parts.disp.current) < 0.001, "burnt segment stays open")
 
+// --- OmaDuino pins: rails, cache, pull-up, a shorted HIGH pin ---
+function duinoElement(code, pinNodes) {
+  var nodes = []
+  for (var i = 0; i < 22; i++) nodes.push(20 + i)
+  nodes[0] = 0
+  nodes[21] = 0
+  nodes[1] = 1
+  nodes[2] = 2
+  if (pinNodes) for (var k in pinNodes) nodes[k] = pinNodes[k]
+  return { id: "mcu", type: "omaduino", nodes: nodes, props: { code: code || "" } }
+}
+var STUB = "void setup() {}\nvoid loop() {}\n"
+var rails = solve([
+  duinoElement(""),
+  { id: "r5", type: "resistor", nodes: [1, 0], props: { ohms: 100 } },
+  { id: "r3", type: "resistor", nodes: [2, 0], props: { ohms: 100 } }
+], 50)
+assert.strictEqual(rails.ok, true)
+assert.strictEqual(rails.converged, true)
+console.log("board 5V", rails.nodeVolts[1].toFixed(3), "3V3", rails.nodeVolts[2].toFixed(3))
+assert.ok(Math.abs(rails.nodeVolts[1] - 4.99) < 0.02, "5V sag " + rails.nodeVolts[1])
+assert.ok(Math.abs(rails.nodeVolts[2] - 3.267) < 0.02, "3.3V sag " + rails.nodeVolts[2])
+assert.strictEqual(rails.parts.mcu.error, "")
+assert.strictEqual(rails.parts.mcu.pins[13].mode, "in")
+assert.strictEqual(rails.parts.mcu.running, false)
+assert.strictEqual(E.isTimeDependent(net([duinoElement("")], 50)), true)
+
+var limited33 = solve([duinoElement("", { 2: 0 })], 50)
+assert.ok(warnLevel(limited33, "warn", "mcu"), "3.3V short should warn")
+
+var boardState = E.createState()
+var stubNet = net([duinoElement(STUB, { 9: 4 })], 50)
+var stub1 = E.solve(stubNet, boardState, 0)
+assert.strictEqual(stub1.parts.mcu.running, true)
+assert.strictEqual(stub1.parts.mcu.pins[2].mode, "in")
+var cached = boardState.mcu.mcu.vm
+cached.pins[2].mode = "pullup"
+cached.pins[13].mode = "out"
+cached.pins[13].level = 1
+var pulled = E.solve(stubNet, boardState, 0)
+assert.strictEqual(boardState.mcu.mcu.vm, cached, "same sketch keeps the VM")
+assert.strictEqual(pulled.parts.mcu.pins[13].mode, "out")
+assert.ok(pulled.nodeVolts[4] > 4.5, "pull-up sits near 5V " + pulled.nodeVolts[4])
+var pressed = E.solve(net([
+  duinoElement(STUB, { 9: 4 }),
+  { id: "b", type: "pushButton", nodes: [4, 0], props: { pressed: true } }
+], 50), boardState, 0)
+assert.ok(pressed.nodeVolts[4] < 0.05, "pressed button pulls the pin down " + pressed.nodeVolts[4])
+
+var shortState = E.createState()
+var shortNet = net([duinoElement(STUB, { 20: 0 })], 50)
+E.solve(shortNet, shortState, 0)
+shortState.mcu.mcu.vm.pins[13].mode = "out"
+shortState.mcu.mcu.vm.pins[13].level = 1
+var pinShort = E.solve(shortNet, shortState, 0)
+var pinWarn = (pinShort.warnings || []).filter(function (w) { return w.part === "mcu" && w.message.indexOf("D13") >= 0 })
+console.log("shorted D13", JSON.stringify(pinWarn))
+assert.ok(pinWarn.some(function (w) { return w.level === "warn" && w.message.indexOf("200 mA") >= 0 }))
+assert.ok(pinWarn.some(function (w) { return w.level === "danger" }))
+
+var badCode = solve([duinoElement("this is not a sketch")], 50)
+assert.ok(badCode.parts.mcu.error, "compile error is reported")
+assert.ok(badCode.parts.mcu.errorLine >= 1)
+assert.strictEqual(badCode.parts.mcu.running, false)
+
+stubNet.elements[0].props.code = ""
+var wiped = E.solve(stubNet, boardState, 0)
+assert.strictEqual(wiped.parts.mcu.pins[13].mode, "in")
+assert.strictEqual(wiped.parts.mcu.error, "")
+assert.strictEqual(boardState.mcu.mcu.vm, null)
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.
