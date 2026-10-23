@@ -223,7 +223,10 @@ export function unpowered(nl, state) {
     if (el.type === "led") p.brightness = 0
     if (el.type === "rgbLed") p.brightness = { r: 0, g: 0, b: 0 }
     if (el.type === "motor") p.spin = 0
-    if (el.type === "buzzer") p.on = false
+    if (el.type === "buzzer") {
+      p.on = false
+      p.reversed = false
+    }
     parts[id] = p
   }
   state.nodeVolts = volts.slice()
@@ -1059,7 +1062,13 @@ export function fillR(p, el, id, pv, state, warnings) {
     p.hot = hot
     if (p.power > 0.25) pushWarn(warnings, id, "warn", "This resistor is over 1/4 watt, so it would get hot. A bigger value runs cooler.")
   }
-  if (el.type === "buzzer") p.on = (v0 - v1) > 2.5
+  if (el.type === "buzzer") {
+    var forward = (v0 - v1) > 2.5
+    var backwards = (v1 - v0) > 2.5
+    p.reversed = backwards
+    p.on = forward && !backwards
+    if (backwards) pushWarn(warnings, id, "warn", "This buzzer is in backwards: its + leg (marked +) needs the higher voltage. Turn it around (R).")
+  }
   if (el.type === "motor") {
     var spin = i / 0.25
     spin = clamp(spin, -1, 1)

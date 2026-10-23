@@ -304,6 +304,18 @@ var buzz = solve([
   { id: "z", type: "buzzer", nodes: [1, 0], props: {} }
 ], 2)
 assert.strictEqual(part(buzz, "z").on, true)
+assert.notStrictEqual(part(buzz, "z").reversed, true)
+
+var buzzBack = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "z", type: "buzzer", nodes: [0, 1], props: {} }
+], 2)
+assert.strictEqual(part(buzzBack, "z").on, false)
+assert.strictEqual(part(buzzBack, "z").reversed, true)
+assert.ok(Math.abs(part(buzzBack, "z").current) > 0.04)
+assert.ok(buzzBack.warnings.some(function (w) {
+  return w.part === "z" && w.level === "warn" && w.message === "This buzzer is in backwards: its + leg (marked +) needs the higher voltage. Turn it around (R)."
+}))
 
 // --- every lesson circuit solves, including a few transient steps ---
 L.lessons.forEach(function (lesson) {
