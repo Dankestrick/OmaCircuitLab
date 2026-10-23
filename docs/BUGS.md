@@ -8,6 +8,8 @@ Open items first. Each one says who fixes it.
 
 ## Fixed
 
+- Inspect cut off text on the right for long part names like the HC-SR04 (title now wraps).
+
 - Robot spun in circles: the arena moved in wall-clock time while sketches count sim time (e033253).
 - Shell crashed running sketches: nested `yield*` in the interpreter (e033253).
 - LED stayed burnt after turning the resistor back up (e223a8d).
