@@ -1304,6 +1304,52 @@ console.log("coupled", part(coupled, "pd").current.toExponential(3), "ir bright"
 assert.ok(part(coupled, "ir").brightness > 0.9)
 assert.ok(Math.abs(part(coupled, "pd").current + 25e-6) < 5e-6, "IR lights the photodiode " + part(coupled, "pd").current)
 
+// --- inductor current rises with L/R; transformer steps the voltage down ---
+assert.strictEqual(E.isTimeDependent(net([{ id: "l", type: "inductor", nodes: [1, 0], props: {} }], 2)), true)
+assert.strictEqual(E.isTimeDependent(net([{ id: "t", type: "transformer", nodes: [1, 0, 2, 3], props: {} }], 4)), true)
+var indDc = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "l", type: "inductor", nodes: [1, 0], props: { henries: 0.1 } }
+], 2)
+assert.ok(Math.abs(part(indDc, "l").current - 9 / 2) < 0.05, "DC inductor is its 0.5 ohm " + part(indDc, "l").current)
+
+var indNet = net([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 10 } },
+  { id: "l", type: "inductor", nodes: [2, 0], props: { henries: 0.1 } }
+], 3)
+var indState = E.createState()
+var indEarly = part(E.solve(indNet, indState, 0.001), "l").current
+var indLast = null
+for (var indI = 0; indI < 7; indI++) indLast = E.solve(indNet, indState, 0.001)
+var indLate = part(indLast, "l").current
+var indInf = 9 / 12
+var indTau = 0.1 / 12
+var indExpect = indInf * (1 - Math.exp(-0.008 / indTau))
+console.log("inductor", indEarly.toFixed(4), "then", indLate.toFixed(4), "expect", indExpect.toFixed(4))
+assert.ok(indLate > indEarly, "current rises")
+assert.ok(Math.abs(indLate - indExpect) < 0.02, "L/R " + indLate)
+
+var xf = solve([
+  { id: "src", type: "benchSupply", nodes: [1, 0], props: { volts: 10, currentLimit: 1 } },
+  { id: "t", type: "transformer", nodes: [1, 0, 2, 3], props: { ratio: 10 } },
+  { id: "r", type: "resistor", nodes: [2, 3], props: { ohms: 1000 } }
+], 4)
+var xfV = part(xf, "t").volts
+console.log("transformer", xfV.toFixed(3), "V", "pri", part(xf, "t").current.toFixed(5))
+assert.ok(xf.converged, "transformer settled")
+assert.ok(Math.abs(xfV - 1) < 0.05, "10:1 secondary " + xfV)
+assert.strictEqual(part(xf, "t").pinCurrents.length, 4)
+var xfSum = 0
+part(xf, "t").pinCurrents.forEach(function (x) { xfSum += x })
+assert.ok(Math.abs(xfSum) < 1e-9, "transformer KCL " + xfSum)
+assert.ok(Math.abs(part(xf, "t").pinCurrents[2] + part(xf, "t").pinCurrents[3]) < 1e-9)
+var xfOpen = solve([
+  { id: "src", type: "benchSupply", nodes: [1, 0], props: { volts: 10, currentLimit: 1 } },
+  { id: "t", type: "transformer", nodes: [1, 0, 2, 3], props: { ratio: 0 } }
+], 4)
+assert.ok(Math.abs(part(xfOpen, "t").volts - 1) < 0.02, "ratio 0 means 10, open secondary " + part(xfOpen, "t").volts)
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.

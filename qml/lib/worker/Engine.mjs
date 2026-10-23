@@ -54,7 +54,8 @@ export function createState() {
     mcu: {},
     servoAngle: {},
     scope: {},
-    fuse: {}
+    fuse: {},
+    indI: {}
   }
 }
 
@@ -63,7 +64,7 @@ export function isTimeDependent(netlist) {
   if (!els) return false
   for (var i = 0; i < els.length; i++) {
     var t = els[i].type
-    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter" || t === "oscilloscope") return true
+    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter" || t === "oscilloscope" || t === "inductor" || t === "transformer") return true
   }
   return false
 }
@@ -156,6 +157,7 @@ export function ensureState(state) {
   if (!state.burnt) state.burnt = {}
   if (!state.burnWhy) state.burnWhy = {}
   if (!state.fuse) state.fuse = {}
+  if (!state.indI) state.indI = {}
   if (!state.spin) state.spin = {}
   if (!state.mcu) state.mcu = {}
   if (!state.servoAngle) state.servoAngle = {}
@@ -771,6 +773,13 @@ export function sourceList(nl, v, state, work) {
       var ac = acInstant(el, work.t)
       nExtra++
       list.push({ kind: "v", plus: nac[0], minus: nac[1], volts: ac.volts, r: ac.r, id: id })
+    } else if (kind === "transformer") {
+      var nxf = pins(el, nl.nodeCount, 4)
+      if (!nxf) { list.push(null); continue }
+      var ratio = num(el, "ratio", 10)
+      if (!(ratio > 0)) ratio = 10
+      nExtra++
+      list.push({ kind: "xfmr", id: id, p1: nxf[0], p2: nxf[1], s1: nxf[2], s2: nxf[3], ratio: ratio })
     } else {
       list.push(null)
     }
@@ -857,6 +866,11 @@ export function build(nl, state, v, dt, ref, work) {
     }
     if (src && src.kind === "driver") {
       stampDriver(sys, src, v, state, nl, work)
+      sources.push(src)
+      continue
+    }
+    if (src && src.kind === "xfmr") {
+      stampTransformer(sys, src)
       sources.push(src)
       continue
     }
@@ -1011,6 +1025,19 @@ export function build(nl, state, v, dt, ref, work) {
       stampMos(sys, nm[0], nm[1], nm[2], vgs, vds)
       var vbd = limitJunction(work, id + ":bd", nodeV(v, nm[0]) - nodeV(v, nm[2]), 1.5, -20, DIODE_NVT, DIODE_IS)
       stampDiode(sys, nm[0], nm[2], vbd, DIODE_IS, DIODE_NVT)
+    } else if (el.type === "inductor") {
+      var nL = pins(el, nl.nodeCount, 2)
+      if (!nL) continue
+      var henries = num(el, "henries", 0.01)
+      if (!(henries > 0)) henries = 0
+      if (henries > 0 && dt > 0) {
+        var geq = 1 / (0.5 + henries / dt)
+        var ihist = indStored(state, id) * (henries / dt) * geq
+        stampG(sys, nL[0], nL[1], geq)
+        stampI(sys, nL[1], nL[0], ihist)
+      } else {
+        stampG(sys, nL[0], nL[1], 1 / 0.5)
+      }
     } else if (el.type === "capacitor" || el.type === "electrolytic") {
       var nc = pins(el, nl.nodeCount, 2)
       if (!nc) continue
@@ -1116,6 +1143,10 @@ export function assemble(nl, state, v, dt, converged, work) {
       fillBjt(p, el, pv)
     } else if (kind === "nmos") {
       fillMos(p, pv)
+    } else if (kind === "inductor") {
+      fillInductor(p, el, id, pv, state, dt)
+    } else if (kind === "transformer") {
+      fillTransformer(p, el, pv)
     } else if (kind === "capacitor" || kind === "electrolytic") {
       fillCap(p, el, id, pv, state, dt, warnings)
     } else if (kind === "multimeter") {
@@ -1702,6 +1733,62 @@ export function fillMos(p, pv) {
   else if (vgs >= MOS_VTH && vds < (vgs - MOS_VTH) && Math.abs(idDrain) > 1e-5) p.state = "saturated"
   else if (Math.abs(idDrain) < 1e-5) p.state = "off"
   else p.state = "active"
+}
+
+export function indStored(state, id) {
+  var i = state.indI[id]
+  return typeof i === "number" && isFinite(i) ? i : 0
+}
+
+export function stampTransformer(sys, src) {
+  var ratio = src.ratio
+  stampG(sys, src.p1, src.p2, 1e-6)
+  var k = sys.extra++
+  src.k = k
+  var ip1 = uiOf(sys, src.p1)
+  var ip2 = uiOf(sys, src.p2)
+  var is1 = uiOf(sys, src.s1)
+  var is2 = uiOf(sys, src.s2)
+  // i leaves P1 and enters P2. ratio*i comes out of S1 and returns into S2,
+  // so Vs = Vp/ratio and the power balances. 0.5 Ω sits on the secondary.
+  if (ip1 >= 0) { sys.A[ip1][k] += 1; sys.A[k][ip1] += 1 }
+  if (ip2 >= 0) { sys.A[ip2][k] -= 1; sys.A[k][ip2] -= 1 }
+  if (is1 >= 0) { sys.A[is1][k] -= ratio; sys.A[k][is1] -= ratio }
+  if (is2 >= 0) { sys.A[is2][k] += ratio; sys.A[k][is2] += ratio }
+  sys.A[k][k] -= 0.5 * ratio * ratio
+}
+
+export function fillInductor(p, el, id, pv, state, dt) {
+  var v = (pv[0] || 0) - (pv[1] || 0)
+  var henries = num(el, "henries", 0.01)
+  if (!(henries > 0)) henries = 0
+  var i
+  if (henries > 0 && dt > 0) {
+    var geq = 1 / (0.5 + henries / dt)
+    var ihist = indStored(state, id) * (henries / dt) * geq
+    i = geq * v + ihist
+  } else {
+    i = v / 0.5
+  }
+  p.current = i
+  p.power = Math.abs(i * v)
+  if (isFinite(i)) state.indI[id] = i
+}
+
+export function fillTransformer(p, el, pv) {
+  var ratio = num(el, "ratio", 10)
+  if (!(ratio > 0)) ratio = 10
+  var vp = (pv[0] || 0) - (pv[1] || 0)
+  var vs = (pv[2] || 0) - (pv[3] || 0)
+  var isec = (vp / ratio - vs) / 0.5
+  var ipri = isec / ratio
+  var imag = vp * 1e-6
+  var i1 = ipri + imag
+  p.current = i1
+  p.volts = vs
+  p.power = Math.abs(imag * vp) + isec * isec * 0.5
+  // Secondary current leaves S1, so the current entering that pin is negative.
+  p.pinCurrents = [i1, -i1, -isec, isec]
 }
 
 export function fillCap(p, el, id, pv, state, dt, warnings) {
