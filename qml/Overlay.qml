@@ -77,6 +77,10 @@ Item {
   property var hoverInfo: null
   property var motorAngles: ({})
   property bool loadedOnce: false
+  // A save file that exists but can't be read is never written over: the
+  // session runs without saving and says why, so nothing of the user's is lost.
+  property bool saveBlocked: false
+  property bool projectsBlocked: false
   property string codePartId: ""          // OmaDuino whose code editor is open
   property bool arenaOpen: false
   property bool projectsOpen: false
@@ -323,7 +327,10 @@ Item {
     atomicWrites: true
     printErrors: false
     onLoaded: root.applySaved(text())
-    onLoadFailed: root.applySaved("")
+    onLoadFailed: function (error) {
+      if (error !== FileViewError.FileNotFound) root.blockSave()
+      root.applySaved("")
+    }
   }
 
   // Saved circuits ("My circuits"), all in one file next to the autosave.
@@ -345,21 +352,26 @@ Item {
           if (p && p.bench && Array.isArray(p.bench.parts)) clean[String(k).substring(0, 80)] = { bench: root.sanitize(p.bench), saved: String(p.saved || "").substring(0, 40) }
         }
         root.projects = clean
-      } catch (e) { root.projects = ({}) }
+      } catch (e) { root.projects = ({}); root.projectsBlocked = true }
     }
+    onLoadFailed: function (error) { if (error !== FileViewError.FileNotFound) root.projectsBlocked = true }
   }
 
   function writeProjects() {
+    if (projectsBlocked) {
+      toast("Can't save: ~/.local/share/omacircuitlab-projects.json could not be read, so it is left as it is. Move or fix it, then reopen.", 8000)
+      return false
+    }
     projectsFile.setText(JSON.stringify({ version: 1, projects: projects }))
+    return true
   }
   function saveProject(name) {
     var next = ({})
     for (var k in projects) next[k] = projects[k]
     next[name] = { bench: cloneBench(bench), saved: new Date().toISOString() }
     projects = next
-    writeProjects()
     projectsOpen = false
-    toast("Saved “" + name + "”")
+    if (writeProjects()) toast("Saved “" + name + "”")
   }
   function openProject(name) {
     if (!projects[name]) return
@@ -376,7 +388,7 @@ Item {
   }
 
   property string toastText: ""
-  function toast(t) { toastText = t; toastTimer.restart() }
+  function toast(t, ms) { toastText = t; toastTimer.interval = ms || 2200; toastTimer.restart() }
   Timer { id: toastTimer; interval: 2200; onTriggered: root.toastText = "" }
 
   // The app menu entry. Written on first open when missing, so a marketplace
@@ -410,6 +422,7 @@ Item {
     loadedOnce = true
     var data = null
     try { data = text && text.length <= maxSavedChars ? JSON.parse(text) : null } catch (e) { data = null }
+    if (text && !(data && data.bench && Array.isArray(data.bench.parts))) blockSave()
     if (data && data.bench && Array.isArray(data.bench.parts)) {
       bench = sanitize(data.bench)
       if (data.settings) {
@@ -476,8 +489,14 @@ Item {
     onTriggered: root.saveNow()
   }
 
+  function blockSave() {
+    if (saveBlocked) return
+    saveBlocked = true
+    toast("Your saved bench (~/.local/share/omacircuitlab.json) could not be read, so this session won't save over it. Move or fix it, then reopen.", 10000)
+  }
+
   function saveNow() {
-    if (!loadedOnce) return
+    if (!loadedOnce || saveBlocked) return
     autosaveFile.setText(JSON.stringify({
       version: 1,
       bench: bench,

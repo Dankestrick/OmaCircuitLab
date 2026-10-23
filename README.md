@@ -98,9 +98,15 @@ To also delete your saved benches and circuits:
 rm -f ~/.local/share/omacircuitlab.json ~/.local/share/omacircuitlab-projects.json
 ```
 
-## Development
+## Permissions and safety
 
-`scripts/dev-install.sh` copies the checkout into `~/.config/omarchy/plugins/` and adds the app menu entry. Run the tests with `for t in tests/*.test.js; do node "$t" || break; done`. After any change to `qml/lib/Engine.js`, `Catalog.js`, `Mcu.js` or `EngineWorker.js`, run `python3 scripts/build-worker.py` and commit the regenerated `qml/lib/worker/*.mjs`.
+- Runs as you, inside the Omarchy shell. It never asks for root, starts no programs, opens no network connections, and installs nothing.
+- Writes only the three files listed above. The app menu entry is created only when it is missing and is never overwritten.
+- If a saved file exists but can't be read, OmaCircuitLab leaves it alone and doesn't save over it, and says so in the window.
+- Saved files are checked when they load (size, known parts only, sensible numbers), and the solver and the code runner have time and size limits, so a broken file or a runaway sketch can't freeze the shell.
+- The **Solid** and **Custom** window buttons set Hyprland's opacity on the OmaCircuitLab window only.
+
+Building from source: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
