@@ -1,4 +1,4 @@
-# Engine handoff for 2026-10-24
+# Engine handoff for 2026-10-23
 
 Read this with `docs/HANDOFF-TOMORROW.md` and `docs/BUGS.md`. Contract v2 and the open driving-pin bug are done. Not pushed. The shell was not restarted. Repo is `/home/dank/GitDank/OmaCircuitLab`. Run tests from that directory. `~/GitDank` is not the repo.
 
