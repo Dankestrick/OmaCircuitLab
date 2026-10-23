@@ -334,8 +334,12 @@ function zeros(n) {
 }
 
 function partId(el, index) {
-  if (el && el.id !== undefined && el.id !== null && el.id !== "") return String(el.id)
-  return "p" + index
+  var id = "p" + index
+  if (el && el.id !== undefined && el.id !== null && el.id !== "") id = String(el.id)
+  // These names are setters on Object.prototype. Using one as a key makes the
+  // part result the object's prototype, and for-in then walks the part fields.
+  if (id === "__proto__" || id === "constructor" || id === "prototype") id = "p" + index
+  return id
 }
 
 function num(el, key, dflt) {

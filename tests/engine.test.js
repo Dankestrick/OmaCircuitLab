@@ -1915,6 +1915,27 @@ var ladderResult = solve([
 ].concat(ladder), 201)
 assert.strictEqual(ladderResult.converged, true, "a 200-resistor ladder still solves")
 
+var protoBench = solve([
+  { id: "__proto__", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } }
+], 2)
+assert.strictEqual(protoBench.converged, true)
+assert.ok(protoBench.parts.p0 && protoBench.parts.p0.current < -0.001, "renamed battery still supplies")
+assert.ok(protoBench.parts.r)
+assert.strictEqual(Object.prototype.hasOwnProperty.call(protoBench.parts, "__proto__"), false)
+assert.strictEqual(Object.prototype.current, undefined)
+var protoNames = []
+for (var pk in protoBench.parts) protoNames.push(pk)
+assert.deepStrictEqual(protoNames.sort(), ["p0", "r"])
+var ctorBench = solve([
+  { id: "constructor", type: "resistor", nodes: [1, 0], props: { ohms: 470 } },
+  { id: "prototype", type: "battery9v", nodes: [1, 0], props: {} }
+], 2)
+assert.strictEqual(ctorBench.converged, true)
+assert.ok(ctorBench.parts.p0 && ctorBench.parts.p1)
+assert.strictEqual(Object.prototype.hasOwnProperty.call(ctorBench.parts, "constructor"), false)
+assert.strictEqual(Object.prototype.hasOwnProperty.call(ctorBench.parts, "prototype"), false)
+
 import(pathToFileURL(path.join(__dirname, "..", "qml", "lib", "worker", "Engine.mjs")).href).then(function (mod) {
   assert.strictEqual(typeof mod.solve, "function")
   assert.strictEqual(typeof mod.createState, "function")
