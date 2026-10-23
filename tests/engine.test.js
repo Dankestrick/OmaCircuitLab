@@ -1012,6 +1012,111 @@ var deadPot = E.solve({
 assert.strictEqual(deadPot.parts.k.pinCurrents.length, 3)
 assert.ok(deadPot.parts.k.pinCurrents.every(function (x) { return x === 0 }), "unpowered pot legs are 0")
 
+// --- AC time base, function generator, wall adapter, ground rules ---
+var fresh = E.createState()
+assert.strictEqual(fresh.t, 0)
+assert.strictEqual(E.isTimeDependent(net([{ id: "ac", type: "acSource", nodes: [1, 0], props: {} }], 2)), true)
+assert.strictEqual(E.isTimeDependent(net([{ id: "wall", type: "acAdapter", nodes: [1, 0], props: {} }], 2)), true)
+
+var acState = E.createState()
+var acNet = net([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { wave: "sine", freq: 60, amplitude: 5, offset: 0 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } }
+], 2)
+var acDc = E.solve(acNet, acState, 0)
+assert.strictEqual(acState.t, 0, "DC solve does not move time")
+assert.ok(Math.abs(part(acDc, "ac").volts) < 1e-6, "sine at t=0 is 0, got " + part(acDc, "ac").volts)
+assert.strictEqual(part(acDc, "ac").vpeak, 5)
+assert.strictEqual(part(acDc, "ac").freq, 60)
+
+var acPeak = E.solve(acNet, acState, 1 / 240)
+assert.ok(Math.abs(acState.t - 1 / 240) < 1e-12, "t advanced by dt")
+var acHeld = E.solve(acNet, acState, 0)
+assert.ok(Math.abs(acState.t - 1 / 240) < 1e-12, "DC solve keeps t")
+var vIdeal = 5
+var iIdeal = vIdeal / 1050
+var vTerm = iIdeal * 1000
+console.log("ac sine", part(acPeak, "ac").volts.toFixed(4), "A", part(acPeak, "ac").current.toFixed(6))
+assert.ok(Math.abs(part(acPeak, "ac").volts - vTerm) < 1e-3, "terminal " + part(acPeak, "ac").volts)
+assert.ok(Math.abs(part(acPeak, "ac").current + iIdeal) < 1e-5, "source current " + part(acPeak, "ac").current)
+assert.ok(Math.abs(part(acPeak, "r").current - iIdeal) < 1e-5)
+assert.ok(Math.abs(part(acHeld, "ac").volts - part(acPeak, "ac").volts) < 1e-6, "DC reread stays at the same time")
+
+var sq = E.solve(net([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { wave: "square", freq: 60, amplitude: 5, offset: 1 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } }
+], 2), E.createState(), 0)
+var sqV = 6 * 1000 / 1050
+assert.ok(Math.abs(part(sq, "ac").volts - sqV) < 1e-3, "square high " + part(sq, "ac").volts)
+var sqLow = E.createState()
+sqLow.t = 0.5 / 60 - 1e-4
+E.solve(net([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { wave: "square", freq: 60, amplitude: 5 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } }
+], 2), sqLow, 1e-4)
+var sqNeg = -5 * 1000 / 1050
+assert.ok(Math.abs(part(E.solve(net([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { wave: "square", freq: 60, amplitude: 5 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } }
+], 2), sqLow, 0), "ac").volts - sqNeg) < 1e-3, "square low")
+
+var tri = E.createState()
+E.solve(net([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { wave: "triangle", freq: 60, amplitude: 4 } }
+], 2), tri, 0.25 / 60)
+assert.ok(Math.abs(part(E.solve(net([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { wave: "triangle", freq: 60, amplitude: 4 } }
+], 2), tri, 0), "ac").volts - 4) < 1e-3, "triangle peak")
+
+var clamped = E.solve(net([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { freq: 9000, amplitude: 80, offset: 0 } }
+], 2), E.createState(), 0)
+assert.strictEqual(part(clamped, "ac").freq, 5000)
+assert.strictEqual(part(clamped, "ac").vpeak, 30)
+
+var wallPeak = 12 * Math.SQRT2
+var wallI = wallPeak / 1001
+var wall = E.solve(net([
+  { id: "wall", type: "acAdapter", nodes: [1, 0], props: { vrms: 12, freq: 60 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } }
+], 2), E.createState(), 1 / 240)
+console.log("adapter", part(wall, "wall").volts.toFixed(3), "peak", part(wall, "wall").vpeak.toFixed(3))
+assert.ok(Math.abs(part(wall, "wall").vpeak - wallPeak) < 1e-6)
+assert.strictEqual(part(wall, "wall").freq, 60)
+assert.ok(Math.abs(part(wall, "wall").volts - wallI * 1000) < 1e-3, "adapter terminal " + part(wall, "wall").volts)
+
+// No bench ground: the generator's − pin is the reference, not node 0.
+var floatAc = E.solve(net([
+  { id: "ac", type: "acSource", nodes: [1, 2], props: { wave: "sine", freq: 60, amplitude: 5 } },
+  { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 1000 } }
+], 3, -1), E.createState(), 1 / 240)
+assert.ok(Math.abs(floatAc.nodeVolts[2]) < 1e-8, "ac − is reference")
+assert.ok(Math.abs(floatAc.nodeVolts[1] - vTerm) < 1e-3, "floating sine " + floatAc.nodeVolts[1])
+
+var floatWall = E.solve(net([
+  { id: "wall", type: "acAdapter", nodes: [1, 2], props: { vrms: 12, freq: 60 } },
+  { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 1000 } }
+], 3, -1), E.createState(), 1 / 240)
+assert.ok(Math.abs(floatWall.nodeVolts[2]) < 1e-8, "adapter ~2 is reference")
+
+// A picked ground (node 0) wins, so the generator's − is not forced to 0.
+var grounded = E.solve(net([
+  { id: "ac", type: "acSource", nodes: [1, 2], props: { wave: "sine", freq: 60, amplitude: 5 } },
+  { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 1000 } }
+], 3, 0), E.createState(), 1 / 240)
+assert.strictEqual(grounded.nodeVolts[0], 0)
+assert.ok(Math.abs(grounded.nodeVolts[2]) > 1, "minus is not the reference when ground is set, got " + grounded.nodeVolts[2])
+assert.ok(Math.abs((grounded.nodeVolts[1] - grounded.nodeVolts[2]) - vTerm) < 1e-3)
+
+// A battery still owns the reference when both are present.
+var both = E.solve(net([
+  { id: "bat", type: "battery9v", nodes: [1, 2], props: {} },
+  { id: "ac", type: "acSource", nodes: [3, 4], props: { amplitude: 5 } },
+  { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 1000 } }
+], 5, -1), E.createState(), 0)
+assert.ok(Math.abs(both.nodeVolts[2]) < 1e-8, "battery − wins")
+assert.ok(Math.abs(both.nodeVolts[1] - 9 * 1000 / 1001.5) < 0.05)
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.

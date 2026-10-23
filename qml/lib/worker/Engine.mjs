@@ -36,6 +36,7 @@ export var OHM_I = 1e-6
 
 export function createState() {
   return {
+    t: 0,
     capV: {},
     burnt: {},
     burnWhy: {},
@@ -52,7 +53,7 @@ export function isTimeDependent(netlist) {
   if (!els) return false
   for (var i = 0; i < els.length; i++) {
     var t = els[i].type
-    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar") return true
+    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter") return true
   }
   return false
 }
@@ -77,6 +78,10 @@ export function solve(netlist, state, dt) {
     }
 
     var work = { junc: {}, supplyMode: {}, tmpOn: {}, servoOn: {}, driverScale: {}, hitLimit: false, changed: false }
+    var tNow = Number(state.t)
+    if (!isFinite(tNow)) tNow = 0
+    // A step is the voltage at the end of dt. A DC solve stays at the current time.
+    work.t = dt > 0 ? tNow + dt : tNow
     seedTmp(nl, v, work)
     seedServo(nl, v, work)
     seedDriver(nl, v, state, work)
@@ -121,7 +126,10 @@ export function solve(netlist, state, dt) {
     var result = assemble(nl, state, last, dt, converged, work)
     state.nodeVolts = last.slice()
     state.nodeCount = nl.nodeCount
-    if (dt > 0) runBoards(nl, state, result, last, dt)
+    if (dt > 0) {
+      state.t = work.t
+      runBoards(nl, state, result, last, dt)
+    }
     return result
   } catch (err) {
     return fail("Something went wrong while simulating this circuit.")
@@ -132,6 +140,7 @@ export function solve(netlist, state, dt) {
 // Netlist hygiene
 
 export function ensureState(state) {
+  if (typeof state.t !== "number" || !isFinite(state.t)) state.t = 0
   if (!state.capV) state.capV = {}
   if (!state.burnt) state.burnt = {}
   if (!state.burnWhy) state.burnWhy = {}
@@ -161,7 +170,7 @@ export function normalize(netlist) {
 export function isPowered(nl) {
   for (var i = 0; i < nl.elements.length; i++) {
     var t = nl.elements[i].type
-    if (t === "battery9v" || t === "aaPack" || t === "benchSupply" || t === "omaduino") return true
+    if (t === "battery9v" || t === "aaPack" || t === "benchSupply" || t === "omaduino" || t === "acSource" || t === "acAdapter") return true
   }
   return false
 }
@@ -174,9 +183,18 @@ export function hasOhmProbe(nl) {
   return false
 }
 
+export function hasDcSupply(nl) {
+  for (var i = 0; i < nl.elements.length; i++) {
+    var t = nl.elements[i].type
+    if (t === "battery9v" || t === "aaPack" || t === "benchSupply" || t === "omaduino") return true
+  }
+  return false
+}
+
 export function chooseRef(nl) {
+  // A ground the bench already picked (node 0) always wins.
   if (nl.ground >= 0) return 0
-  if (isPowered(nl)) {
+  if (hasDcSupply(nl)) {
     for (var i = 0; i < nl.elements.length; i++) {
       var el = nl.elements[i]
       var t = el.type
@@ -189,6 +207,13 @@ export function chooseRef(nl) {
       var n = pins(el, nl.nodeCount, 2)
       if (n) return n[1]
     }
+  }
+  // AC alone: the function generator's −, or the adapter's ~2.
+  for (var a = 0; a < nl.elements.length; a++) {
+    var ac = nl.elements[a]
+    if (ac.type !== "acSource" && ac.type !== "acAdapter") continue
+    var na = pins(ac, nl.nodeCount, 2)
+    if (na) return na[1]
   }
   return ohmRef(nl)
 }
@@ -594,6 +619,51 @@ export function ntcOhms(celsius) {
   return 10000 * Math.exp(3950 * (1 / t - 1 / 298.15))
 }
 
+// Fraction of a cycle in [0, 1). freq*t keeps the half-cycle boundary exact;
+// wrapping through 2π and back lands a hair under 0.5.
+export function acPhase(freq, t) {
+  var p = freq * t
+  if (!isFinite(p)) return 0
+  p = p - Math.floor(p)
+  if (p < 0) p += 1
+  return p
+}
+
+// Square is +1 for the first half cycle and −1 from the midpoint on.
+// Triangle is 0 at phase 0 and +1 at a quarter cycle.
+export function acShape(wave, p) {
+  if (wave === "square") return p < 0.5 ? 1 : -1
+  if (wave === "triangle") {
+    if (p < 0.25) return p / 0.25
+    if (p < 0.75) return 1 - (p - 0.25) / 0.25
+    return -1 + (p - 0.75) / 0.25
+  }
+  return Math.sin(2 * Math.PI * p)
+}
+
+export function acInstant(el, t) {
+  if (!isFinite(t)) t = 0
+  if (el.type === "acAdapter") {
+    var vrms = num(el, "vrms", 12)
+    if (!(vrms >= 0)) vrms = 12
+    var af = num(el, "freq", 60)
+    if (!(af > 0)) af = 60
+    var apeak = vrms * Math.SQRT2
+    return { volts: apeak * acShape("sine", acPhase(af, t)), vpeak: apeak, freq: af, r: 1 }
+  }
+  var wave = str(el, "wave", "sine")
+  if (wave !== "square" && wave !== "triangle") wave = "sine"
+  var freq = num(el, "freq", 60)
+  if (!(freq >= 1)) freq = 1
+  if (freq > 5000) freq = 5000
+  var amp = num(el, "amplitude", 5)
+  if (!(amp >= 0)) amp = 0
+  if (amp > 30) amp = 30
+  var offset = num(el, "offset", 0)
+  if (!isFinite(offset)) offset = 0
+  return { volts: offset + amp * acShape(wave, acPhase(freq, t)), vpeak: amp, freq: freq, r: 50 }
+}
+
 export function potSections(el) {
   var ohms = num(el, "ohms", 10000)
   if (ohms < 2) ohms = 2
@@ -683,6 +753,12 @@ export function sourceList(nl, v, state, work) {
       if (!ndrv) { list.push(null); continue }
       nExtra += 4
       list.push({ kind: "driver", id: id, pins: ndrv })
+    } else if (kind === "acSource" || kind === "acAdapter") {
+      var nac = pins(el, nl.nodeCount, 2)
+      if (!nac) { list.push(null); continue }
+      var ac = acInstant(el, work.t)
+      nExtra++
+      list.push({ kind: "v", plus: nac[0], minus: nac[1], volts: ac.volts, r: ac.r, id: id })
     } else {
       list.push(null)
     }
@@ -958,6 +1034,8 @@ export function assemble(nl, state, v, dt, converged, work) {
 
     if (kind === "battery9v" || kind === "aaPack" || kind === "benchSupply") {
       fillSource(p, el, id, pv, warnings)
+    } else if (kind === "acSource" || kind === "acAdapter") {
+      fillAc(p, el, pv, work)
     } else if (kind === "resistor" || kind === "ldr" || kind === "thermistor" || kind === "pushButton" || kind === "buzzer" || kind === "motor") {
       fillR(p, el, id, pv, state, nl, warnings)
     } else if (kind === "slideSwitch") {
@@ -1012,6 +1090,17 @@ export function pinVoltsOf(el, v, nodeCount) {
     else pv.push(nodeV(v, n | 0))
   }
   return pv
+}
+
+export function fillAc(p, el, pv, work) {
+  var ac = acInstant(el, work && isFinite(work.t) ? work.t : 0)
+  var vterm = (pv[0] || 0) - (pv[1] || 0)
+  var iOut = (ac.volts - vterm) / ac.r
+  p.current = -iOut
+  p.power = Math.abs(iOut * vterm)
+  p.volts = vterm
+  p.vpeak = ac.vpeak
+  p.freq = ac.freq
 }
 
 export function fillSource(p, el, id, pv, warnings) {
