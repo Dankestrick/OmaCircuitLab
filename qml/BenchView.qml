@@ -243,13 +243,14 @@ Item {
       var def = Catalog.parts[part.type]
       var lines = [def.tip]
       var live = result && result.parts ? result.parts[part.id] : null
+      var stats = null
       if (running && live) {
-        var bits = []
-        if (live.current !== undefined) bits.push("Current " + Catalog.si(Math.abs(live.current), "A"))
-        if (live.pinVolts && live.pinVolts.length >= 2) bits.push("Voltage across " + Catalog.si(Math.abs(live.pinVolts[0] - live.pinVolts[1]), "V"))
-        if (live.power !== undefined && live.power > 1e-4) bits.push("Power " + Catalog.si(live.power, "W"))
-        if (bits.length) lines.push(bits.join("  ·  "))
-        if (part.type === "clampMeter") lines.push(live.note || "Reading " + live.reading)
+        // Numbers go to the small V= A= W= strip on the bench, not the notes.
+        stats = {}
+        if (live.pinVolts && live.pinVolts.length >= 2) stats.v = Catalog.si(Math.abs(live.pinVolts[0] - live.pinVolts[1]), "V")
+        if (live.current !== undefined) stats.a = Catalog.si(Math.abs(live.current), "A")
+        if (live.power !== undefined) stats.w = Catalog.si(Math.abs(live.power), "W")
+        if (part.type === "clampMeter") { stats.a = live.reading; if (live.note) lines.push(live.note) }
       }
       var pins = Catalog.pinPoints(part)
       for (var i = 0; i < pins.length; i++) {
@@ -259,22 +260,26 @@ Item {
         }
       }
       if (def.editable && def.editable.length) lines.push("Click it to change " + def.editable.map(function (e) { return e.label.toLowerCase() }).join(", ") + " in Inspect, or scroll on it for a quick change.")
-      return { title: def.name, body: lines.join("\n") }
+      return { title: def.name, body: lines.join("\n"), stats: stats }
     }
     var wire = wireAt(g)
     if (wire) {
       var wv = voltsAt(wire.a.x, wire.a.y)
       var hint = ""
       for (var c = 0; c < Catalog.wireColors.length; c++) if (Catalog.wireColors[c].id === wire.color) hint = Catalog.wireColors[c].hint
-      return { title: "Jumper wire", body: "Wires connect two points with almost no resistance. " + hint + (wv !== null ? "\nVoltage on this wire: " + Catalog.si(wv, "V") : "") }
+      var ws = null
+      if (running && result && netlist) {
+        var wc = Clamp.wireCurrent(bench, netlist, result, wire.id)
+        ws = { v: wv !== null ? Catalog.si(wv, "V") + " to ground" : "", a: wc.amps !== undefined ? Catalog.si(Math.abs(wc.amps), "A") : "" }
+      }
+      return { title: "Jumper wire", body: "Wires connect two points with almost no resistance. " + hint, stats: ws }
     }
     if (hole) {
       var hv = voltsAt(pt.x, pt.y)
       var body = hole.kind === "rail"
         ? "Power rail: every hole along this line is connected. Wire your supply's " + (hole.sign === "+" ? "+ (red)" : "− (black)") + " here, then tap power anywhere along it."
         : "The five holes " + (hole.half === "top" ? "a–e" : "f–j") + " in column " + hole.column + " are connected inside the board (they light up now). The center channel separates the two halves."
-      if (hv !== null) body += "\nVoltage here: " + Catalog.si(hv, "V")
-      return { title: hole.label, body: body }
+      return { title: hole.label, body: body, stats: hv !== null ? { v: Catalog.si(hv, "V") + " to ground" } : null }
     }
     return null
   }

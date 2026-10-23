@@ -635,62 +635,100 @@ Item {
                 font.pixelSize: root.fCaption
               }
 
-              ListView {
+              // As tall as its tiles (scrolls if they don't fit); the notes get the rest.
+              Flickable {
                 id: partList
                 Layout.fillWidth: true
-                Layout.fillHeight: true
+                Layout.preferredHeight: tileColumn.implicitHeight
+                Layout.minimumHeight: Math.min(tileColumn.implicitHeight, Style.space(160))
+                contentHeight: tileColumn.implicitHeight
                 clip: true
-                spacing: Style.spacing.sm
                 boundsBehavior: Flickable.StopAtBounds
-                model: {
-                  var g = Catalog.grouped()
-                  for (var i = 0; i < g.length; i++) if (g[i].id === root.category) return g[i].items
-                  return []
-                }
-                delegate: Rectangle {
-                  id: tile
-                  required property var modelData
+                Column {
+                  id: tileColumn
                   width: partList.width
-                  height: tileCol.implicitHeight + Style.spacing.md * 2
-                  radius: Style.cornerRadius
-                  readonly property bool active: benchView.placingType === modelData.id
-                  color: active ? root.accent : tileMouse.containsMouse ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.10) : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.04)
-                  border.color: active ? root.accent : root.lineColor
-                  border.width: 1
-                  Column {
-                    id: tileCol
-                    anchors.left: parent.left; anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.margins: Style.spacing.md
-                    spacing: 2
-                    Text {
-                      text: modelData.name
-                      color: tile.active ? root.textOn(root.accent) : root.fg
-                      font.family: root.fontFamily
-                      font.pixelSize: root.fBody
-                      font.bold: true
+                  spacing: Style.spacing.sm
+                  Repeater {
+                    model: {
+                      var g = Catalog.grouped()
+                      for (var i = 0; i < g.length; i++) if (g[i].id === root.category) return g[i].items
+                      return []
                     }
-                    Text {
-                      width: parent.width
-                      text: Catalog.parts[modelData.id].tip.split(". ")[0] + "."
-                      wrapMode: Text.WordWrap
-                      maximumLineCount: 2
-                      elide: Text.ElideRight
-                      color: tile.active ? root.textOn(root.accent) : root.muted
-                      font.family: root.fontFamily
-                      font.pixelSize: root.fCaption
+                    delegate: Rectangle {
+                      id: tile
+                      required property var modelData
+                      width: tileColumn.width
+                      height: tileCol.implicitHeight + Style.spacing.md * 2
+                      radius: Style.cornerRadius
+                      readonly property bool active: benchView.placingType === modelData.id
+                      color: active ? root.accent : tileMouse.containsMouse ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.10) : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.04)
+                      border.color: active ? root.accent : root.lineColor
+                      border.width: 1
+                      Column {
+                        id: tileCol
+                        anchors.left: parent.left; anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.margins: Style.spacing.md
+                        spacing: 2
+                        Text {
+                          text: modelData.name
+                          color: tile.active ? root.textOn(root.accent) : root.fg
+                          font.family: root.fontFamily
+                          font.pixelSize: root.fBody
+                          font.bold: true
+                        }
+                        Text {
+                          width: parent.width
+                          text: Catalog.parts[modelData.id].tip.split(". ")[0] + "."
+                          wrapMode: Text.WordWrap
+                          maximumLineCount: 2
+                          elide: Text.ElideRight
+                          color: tile.active ? root.textOn(root.accent) : root.muted
+                          font.family: root.fontFamily
+                          font.pixelSize: root.fCaption
+                        }
+                      }
+                      MouseArea {
+                        id: tileMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          benchView.placingType = tile.active ? "" : modelData.id
+                          benchView.placingRot = 0
+                          keyCatcher.forceActiveFocus()
+                        }
+                      }
                     }
                   }
-                  MouseArea {
-                    id: tileMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                      benchView.placingType = tile.active ? "" : modelData.id
-                      benchView.placingRot = 0
-                      keyCatcher.forceActiveFocus()
-                    }
+                }
+              }
+
+              // Notes for whatever is under the cursor, in the space below the parts.
+              Item {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumHeight: Style.space(60)
+                clip: true
+                Column {
+                  width: parent.width
+                  spacing: Style.spacing.xs
+                  Text {
+                    width: parent.width
+                    text: root.hoverInfo ? root.hoverInfo.title : "Notes"
+                    color: root.fg
+                    wrapMode: Text.WordWrap
+                    font.family: root.fontFamily
+                    font.pixelSize: root.fBody
+                    font.bold: true
+                  }
+                  Text {
+                    width: parent.width
+                    text: root.hoverInfo ? root.hoverInfo.body : "Point at a part, wire or hole to learn about it here."
+                    color: root.muted
+                    wrapMode: Text.WordWrap
+                    font.family: root.fontFamily
+                    font.pixelSize: root.fCaption
                   }
                 }
               }
@@ -846,38 +884,36 @@ Item {
               }
             }
 
-            // Hover help, pinned to the bottom-left so it never covers the cursor.
+            // Live numbers for what's under the cursor, small, along the bottom.
             Rectangle {
-              visible: root.hoverInfo !== null
+              readonly property var st: root.hoverInfo && root.hoverInfo.stats ? root.hoverInfo.stats : null
+              readonly property string line: {
+                if (!st) return ""
+                var bits = []
+                if (st.v) bits.push("V= " + st.v)
+                if (st.a) bits.push("A= " + st.a)
+                if (st.w) bits.push("W= " + st.w)
+                return bits.join("    ")
+              }
+              visible: line !== ""
               anchors.left: parent.left
               anchors.bottom: parent.bottom
-              anchors.margins: Style.spacing.lg
-              width: Math.min(parent.width * 0.55, Style.space(620))
-              height: hoverCol.implicitHeight + Style.spacing.lg * 2
-              radius: Style.cornerRadius
-              color: Qt.rgba(0.07, 0.08, 0.09, 0.94)
+              anchors.margins: Style.spacing.md
+              width: statsText.implicitWidth + Style.spacing.lg * 2
+              height: statsText.implicitHeight + Style.spacing.sm * 2
+              radius: height / 2
+              color: Qt.rgba(0.07, 0.08, 0.09, 0.9)
               border.color: root.accent
               border.width: 1
-              Column {
-                id: hoverCol
-                anchors.fill: parent
-                anchors.margins: Style.spacing.lg
-                spacing: Style.spacing.xs
-                Text {
-                  text: root.hoverInfo ? root.hoverInfo.title : ""
-                  color: "#ffffff"
-                  font.family: root.fontFamily
-                  font.pixelSize: root.fBody
-                  font.bold: true
-                }
-                Text {
-                  width: parent.width
-                  text: root.hoverInfo ? root.hoverInfo.body : ""
-                  color: "#d8dde2"
-                  wrapMode: Text.WordWrap
-                  font.family: root.fontFamily
-                  font.pixelSize: root.fSmall
-                }
+              z: 4
+              Text {
+                id: statsText
+                anchors.centerIn: parent
+                text: parent.line
+                color: "#e8edf1"
+                font.family: root.fontFamily
+                font.pixelSize: root.fSmall
+                font.bold: true
               }
             }
 
