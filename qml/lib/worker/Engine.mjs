@@ -32,6 +32,8 @@ export var PHOTO_I = 50e-6
 export var FUSE_MSG = "The fuse blew: too much current. Fix the short, then press Reset."
 export var REG_LOW = "This 7805 needs at least 7 V in to make 5 V."
 export var REG_HOT = "This 7805 is passing more than 1 A. It will get hot."
+export var OP_GAIN = 1e5
+export var OP_ROUT = 50
 export var BJT_IS = 1e-14
 export var BJT_BR = 5
 export var LED_NVT = 0.05
@@ -91,7 +93,7 @@ export function solve(netlist, state, dt) {
       if (ref >= 0 && ref < nl.nodeCount) v[ref] = 0
     }
 
-    var work = { junc: {}, supplyMode: {}, regMode: {}, tmpOn: {}, servoOn: {}, driverScale: {}, hitLimit: false, changed: false }
+    var work = { junc: {}, supplyMode: {}, regMode: {}, opMode: {}, tmpOn: {}, servoOn: {}, driverScale: {}, hitLimit: false, changed: false }
     var tNow = Number(state.t)
     if (!isFinite(tNow)) tNow = 0
     // A step is the voltage at the end of dt. A DC solve stays at the current time.
@@ -464,6 +466,36 @@ export function stampRegulator(sys, src) {
   if (ii >= 0) sys.A[ii][k] -= 1
 }
 
+export function opRails(v, src) {
+  var lower = nodeV(v, src.vn) + 0.05
+  var upper = nodeV(v, src.vpwr) - 1.5
+  if (upper < lower) upper = lower
+  return { lo: lower, hi: upper }
+}
+
+export function stampOpamp(sys, src, v) {
+  // Each input is 10 MΩ to the V− pin.
+  stampG(sys, src.inn, src.vn, 1e-7)
+  stampG(sys, src.inp, src.vn, 1e-7)
+  var k = sys.extra++
+  src.k = k
+  var io = uiOf(sys, src.out)
+  var ivn = uiOf(sys, src.vn)
+  // i leaves OUT and returns into the V− pin, so the part's currents sum to 0.
+  if (io >= 0) { sys.A[io][k] += 1; sys.A[k][io] += 1 }
+  if (ivn >= 0) sys.A[ivn][k] -= 1
+  sys.A[k][k] -= OP_ROUT
+  if (src.mode === "lin") {
+    var ip = uiOf(sys, src.inp)
+    var im = uiOf(sys, src.inn)
+    if (ip >= 0) sys.A[k][ip] -= OP_GAIN
+    if (im >= 0) sys.A[k][im] += OP_GAIN
+    return
+  }
+  var rails = opRails(v, src)
+  sys.z[k] += src.mode === "hi" ? rails.hi : rails.lo
+}
+
 export function stampGmin(sys) {
   for (var n = 0; n < sys.nodeCount; n++) {
     if (n !== sys.ref) stampG(sys, n, sys.ref, GMIN)
@@ -827,6 +859,13 @@ export function sourceList(nl, v, state, work) {
       var rmode = work.regMode[id]
       if (rmode !== "reg" && rmode !== "drop" && rmode !== "off") rmode = regRegion(nodeV(v, nreg[0]) - nodeV(v, nreg[1]), "")
       list.push({ kind: "reg", id: id, inn: nreg[0], gnd: nreg[1], out: nreg[2], mode: rmode })
+    } else if (kind === "opamp") {
+      var nop = pins(el, nl.nodeCount, 5)
+      if (!nop) { list.push(null); continue }
+      nExtra++
+      var omode = work.opMode[id]
+      if (omode !== "lin" && omode !== "hi" && omode !== "lo") omode = "lin"
+      list.push({ kind: "op", id: id, inn: nop[0], inp: nop[1], vn: nop[2], vpwr: nop[3], out: nop[4], mode: omode })
     } else {
       list.push(null)
     }
@@ -877,6 +916,39 @@ export function noteModes(built, v, work, nl, state) {
   }
   noteRelays(nl, v, work, state)
   noteRegulators(built, v, work)
+  noteOpamps(built, v, work)
+}
+
+export function noteOpamps(built, v, work) {
+  if (!work.opMode) work.opMode = {}
+  var srcs = built.sources
+  for (var i = 0; i < srcs.length; i++) {
+    var s = srcs[i]
+    if (!s || s.kind !== "op") continue
+    // A capped Newton step has not reached the real input yet. Stay put.
+    if (work.hitLimit) {
+      work.opMode[s.id] = s.mode
+      continue
+    }
+    var rails = opRails(v, s)
+    var vd = nodeV(v, s.inp) - nodeV(v, s.inn)
+    var unlimited = OP_GAIN * vd
+    var prev = s.mode
+    var next = prev
+    if (prev === "hi") {
+      if (vd < -1e-4) next = "lin"
+    } else if (prev === "lo") {
+      if (vd > 1e-4) next = "lin"
+    } else if (unlimited > rails.hi) {
+      next = "hi"
+    } else if (unlimited < rails.lo) {
+      next = "lo"
+    } else {
+      next = "lin"
+    }
+    if (next !== prev) work.changed = true
+    work.opMode[s.id] = next
+  }
 }
 
 export function noteRegulators(built, v, work) {
@@ -959,6 +1031,11 @@ export function build(nl, state, v, dt, ref, work) {
     }
     if (src && src.kind === "reg") {
       stampRegulator(sys, src)
+      sources.push(src)
+      continue
+    }
+    if (src && src.kind === "op") {
+      stampOpamp(sys, src, v)
       sources.push(src)
       continue
     }
@@ -1255,6 +1332,8 @@ export function assemble(nl, state, v, dt, converged, work) {
       fillTransformer(p, el, pv)
     } else if (kind === "regulator7805") {
       fillRegulator(p, id, pv, warnings)
+    } else if (kind === "opamp") {
+      fillOpamp(p, pv)
     } else if (kind === "capacitor" || kind === "electrolytic") {
       fillCap(p, el, id, pv, state, dt, warnings)
     } else if (kind === "multimeter") {
@@ -1867,6 +1946,26 @@ export function stampTransformer(sys, src) {
 }
 
 export var RELAY_SPIKE = "The relay coil spiked below -20 V when it turned off. Put a diode across the coil, stripe toward +."
+
+export function fillOpamp(p, pv) {
+  var vn = pv[2] || 0
+  var vd = (pv[1] || 0) - (pv[0] || 0)
+  var unlimited = OP_GAIN * vd
+  var lower = vn + 0.05
+  var upper = (pv[3] || 0) - 1.5
+  if (upper < lower) upper = lower
+  var target = unlimited
+  if (target > upper) target = upper
+  if (target < lower) target = lower
+  var iOut = ((pv[4] || 0) - target) / OP_ROUT
+  var iInm = ((pv[0] || 0) - vn) / 1e7
+  var iInp = ((pv[1] || 0) - vn) / 1e7
+  p.current = iInm
+  p.out = pv[4] || 0
+  p.saturated = unlimited > upper + 1e-3 || unlimited < lower - 1e-3
+  p.power = Math.abs(iOut * (pv[4] || 0))
+  p.pinCurrents = [iInm, iInp, -iOut - iInm - iInp, 0, iOut]
+}
 
 export function fillRegulator(p, id, pv, warnings) {
   var vin = (pv[0] || 0) - (pv[1] || 0)

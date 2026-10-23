@@ -1435,6 +1435,41 @@ assert.ok((regHot.warnings || []).some(function (w) {
   return w.part === "u" && w.message === "This 7805 is passing more than 1 A. It will get hot."
 }), "overcurrent warning")
 
+// --- op-amp follower tracks the + input, and saturates at V+ − 1.5 ---
+assert.strictEqual(E.isTimeDependent(net([{ id: "u", type: "opamp", nodes: [1, 2, 0, 3, 4], props: {} }], 5)), false)
+function opFollower(signal) {
+  return [
+    { id: "vp", type: "benchSupply", nodes: [1, 0], props: { volts: 9, currentLimit: 0.1 } },
+    { id: "vs", type: "benchSupply", nodes: [2, 0], props: { volts: signal, currentLimit: 0.1 } },
+    { id: "u", type: "opamp", nodes: [3, 2, 0, 1, 3], props: {} }
+  ]
+}
+var opMid = solve(opFollower(2), 4)
+console.log("opamp follow", part(opMid, "u").out.toFixed(4), "sat", part(opMid, "u").saturated)
+assert.strictEqual(opMid.converged, true)
+assert.ok(Math.abs(part(opMid, "u").out - part(opMid, "u").pinVolts[1]) < 0.001, "OUT tracks + input " + part(opMid, "u").out)
+assert.ok(Math.abs(part(opMid, "u").out - 2) < 0.02, "about 2 V " + part(opMid, "u").out)
+assert.strictEqual(part(opMid, "u").saturated, false)
+assert.strictEqual(part(opMid, "u").pinCurrents.length, 5)
+var opSum = 0
+part(opMid, "u").pinCurrents.forEach(function (x) { opSum += x })
+assert.ok(Math.abs(opSum) < 1e-9, "opamp KCL " + opSum)
+
+var opHi = solve(opFollower(8), 4)
+console.log("opamp sat", part(opHi, "u").out.toFixed(4), "sat", part(opHi, "u").saturated)
+assert.strictEqual(opHi.converged, true)
+assert.ok(Math.abs(part(opHi, "u").out - 7.5) < 0.02, "upper rail " + part(opHi, "u").out)
+assert.strictEqual(part(opHi, "u").saturated, true)
+
+var opLo = solve([
+  { id: "vp", type: "benchSupply", nodes: [1, 0], props: { volts: 9, currentLimit: 0.1 } },
+  { id: "u", type: "opamp", nodes: [3, 0, 0, 1, 3], props: {} }
+], 4)
+console.log("opamp low", part(opLo, "u").out.toFixed(4), "sat", part(opLo, "u").saturated)
+assert.strictEqual(opLo.converged, true)
+assert.ok(Math.abs(part(opLo, "u").out - 0.05) < 0.02, "lower rail " + part(opLo, "u").out)
+assert.strictEqual(part(opLo, "u").saturated, true)
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.
