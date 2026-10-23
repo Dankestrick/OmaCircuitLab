@@ -305,6 +305,7 @@ var buzz = solve([
 ], 2)
 assert.strictEqual(part(buzz, "z").on, true)
 assert.notStrictEqual(part(buzz, "z").reversed, true)
+assert.strictEqual(part(buzz, "z").freq, 2300)
 
 var buzzBack = solve([
   { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
@@ -312,10 +313,62 @@ var buzzBack = solve([
 ], 2)
 assert.strictEqual(part(buzzBack, "z").on, false)
 assert.strictEqual(part(buzzBack, "z").reversed, true)
+assert.strictEqual(part(buzzBack, "z").freq, 0)
 assert.ok(Math.abs(part(buzzBack, "z").current) > 0.04)
 assert.ok(buzzBack.warnings.some(function (w) {
   return w.part === "z" && w.level === "warn" && w.message === "This buzzer is in backwards: its + leg (marked +) needs the higher voltage. Turn it around (R)."
 }))
+
+var buzzQuiet = solve([
+  { id: "z", type: "buzzer", nodes: [1, 0], props: {} }
+], 2)
+assert.strictEqual(part(buzzQuiet, "z").on, false)
+assert.strictEqual(part(buzzQuiet, "z").freq, 0)
+
+var buzzSoft = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 1000 } },
+  { id: "z", type: "buzzer", nodes: [2, 0], props: {} }
+], 3)
+assert.strictEqual(part(buzzSoft, "z").on, false)
+assert.strictEqual(part(buzzSoft, "z").freq, 0)
+
+// D8 (catalog index 15, sketch pin 8) on the + leg. tone() wins even
+// though pwm 127 averages under the 2.5 V on-threshold.
+var toneState = E.createState()
+var toneNet = net([
+  duinoElement("void setup() {}\nvoid loop() {}\n", { 15: 5 }),
+  { id: "z", type: "buzzer", nodes: [5, 0], props: {} }
+], 50)
+E.solve(toneNet, toneState, 0)
+toneState.mcu.mcu.vm.pins[8].mode = "out"
+toneState.mcu.mcu.vm.pins[8].pwm = 127
+toneState.mcu.mcu.vm.pins[8].tone = 440
+var toned = E.solve(toneNet, toneState, 0)
+assert.strictEqual(part(toned, "z").freq, 440)
+assert.strictEqual(part(toned, "z").on, false)
+
+toneState.mcu.mcu.vm.pins[8].tone = null
+toneState.mcu.mcu.vm.pins[8].pwm = null
+toneState.mcu.mcu.vm.pins[8].level = 1
+var buzzHigh = E.solve(toneNet, toneState, 0)
+assert.strictEqual(part(buzzHigh, "z").on, true)
+assert.strictEqual(part(buzzHigh, "z").freq, 2300)
+
+// A tone on the minus leg does not set the pitch.
+var toneMinus = E.createState()
+var minusNet = net([
+  duinoElement("void setup() {}\nvoid loop() {}\n", { 15: 5 }),
+  { id: "z", type: "buzzer", nodes: [0, 5], props: {} }
+], 50)
+E.solve(minusNet, toneMinus, 0)
+toneMinus.mcu.mcu.vm.pins[8].mode = "out"
+toneMinus.mcu.mcu.vm.pins[8].level = 1
+toneMinus.mcu.mcu.vm.pins[8].tone = 880
+var minusBuzz = E.solve(minusNet, toneMinus, 0)
+assert.strictEqual(part(minusBuzz, "z").reversed, true)
+assert.strictEqual(part(minusBuzz, "z").on, false)
+assert.strictEqual(part(minusBuzz, "z").freq, 0)
 
 // --- every lesson circuit solves, including a few transient steps ---
 L.lessons.forEach(function (lesson) {

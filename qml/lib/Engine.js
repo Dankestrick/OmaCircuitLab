@@ -226,6 +226,7 @@ function unpowered(nl, state) {
     if (el.type === "buzzer") {
       p.on = false
       p.reversed = false
+      p.freq = 0
     }
     parts[id] = p
   }
@@ -953,7 +954,7 @@ function assemble(nl, state, v, dt, converged, work) {
     if (kind === "battery9v" || kind === "aaPack" || kind === "benchSupply") {
       fillSource(p, el, id, pv, warnings)
     } else if (kind === "resistor" || kind === "ldr" || kind === "thermistor" || kind === "pushButton" || kind === "buzzer" || kind === "motor") {
-      fillR(p, el, id, pv, state, warnings)
+      fillR(p, el, id, pv, state, nl, warnings)
     } else if (kind === "slideSwitch") {
       fillSwitch(p, el, pv)
     } else if (kind === "potentiometer") {
@@ -1049,7 +1050,7 @@ function shorted(el, vterm, iOut) {
   return false
 }
 
-function fillR(p, el, id, pv, state, warnings) {
+function fillR(p, el, id, pv, state, nl, warnings) {
   var r = twoTermR(el)
   var v0 = pv[0] || 0
   var v1 = pv[1] || 0
@@ -1067,6 +1068,11 @@ function fillR(p, el, id, pv, state, warnings) {
     var backwards = (v1 - v0) > 2.5
     p.reversed = backwards
     p.on = forward && !backwards
+    var plus = el.nodes && el.nodes.length ? (el.nodes[0] | 0) : -1
+    var tone = buzzerTone(state, nl, plus)
+    if (tone > 0) p.freq = tone
+    else if (p.on) p.freq = 2300
+    else p.freq = 0
     if (backwards) pushWarn(warnings, id, "warn", "This buzzer is in backwards: its + leg (marked +) needs the higher voltage. Turn it around (R).")
   }
   if (el.type === "motor") {
@@ -1075,6 +1081,26 @@ function fillR(p, el, id, pv, state, warnings) {
     state.spin[id] = spin
     p.spin = spin
   }
+}
+
+function buzzerTone(state, nl, plusNode) {
+  if (!nl || plusNode < 0) return 0
+  for (var i = 0; i < nl.elements.length; i++) {
+    var board = nl.elements[i]
+    if (board.type !== "omaduino") continue
+    var map = boardMap(board)
+    var slot = state.mcu && state.mcu[partId(board, i)]
+    var srcPins = slot && slot.vm ? slot.vm.pins : null
+    if (!srcPins) continue
+    for (var s = 0; s < 20; s++) {
+      if (map.pins[s] !== plusNode) continue
+      var src = srcPins[s]
+      if (!src || src.tone === null || src.tone === undefined) continue
+      var hz = Number(src.tone)
+      if (isFinite(hz) && hz > 0) return hz
+    }
+  }
+  return 0
 }
 
 function fillSwitch(p, el, pv) {
