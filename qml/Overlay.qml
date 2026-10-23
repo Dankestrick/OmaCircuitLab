@@ -89,20 +89,18 @@ Item {
   readonly property var robotLive: running && robotCar && result && result.parts ? result.parts[robotCar.id] || null : null
 
   // Drive the car around the arena with the wheel speeds the engine reports,
-  // and feed what its sonar sees back into the circuit. Only while visible.
-  Timer {
-    interval: 33
-    repeat: true
-    running: root.arenaOpen && root.running && root.windowShown && root.robotCar !== null
-    onTriggered: {
-      var l = root.robotLive ? Number(root.robotLive.leftSpin) || 0 : 0
-      var r = root.robotLive ? Number(root.robotLive.rightSpin) || 0 : 0
-      root.arenaState = Arena.step(root.arenaState, l, r, 0.033)
-      var d = Math.round(root.arenaState.distance)
-      if (Math.abs(d - root.robotCar.props.distance) >= 1) {
-        root.robotCar.props.distance = d
-        engine.sendMessage({ cmd: "setProp", id: root.robotCar.id, key: "distance", value: d })
-      }
+  // and feed what its sonar sees back into the circuit. The car moves by the
+  // simulated time each reply covers, so a sketch's delay(350) turn is the
+  // same turn even when the PC simulates slower than real time.
+  function driveArena(simTime) {
+    if (!arenaOpen || !running || !windowShown || robotCar === null || !(simTime > 0)) return
+    var l = robotLive ? Number(robotLive.leftSpin) || 0 : 0
+    var r = robotLive ? Number(robotLive.rightSpin) || 0 : 0
+    arenaState = Arena.step(arenaState, l, r, Math.min(simTime, 0.1))
+    var d = Math.round(arenaState.distance)
+    if (Math.abs(d - robotCar.props.distance) >= 1) {
+      robotCar.props.distance = d
+      engine.sendMessage({ cmd: "setProp", id: robotCar.id, key: "distance", value: d })
     }
   }
 
@@ -202,6 +200,7 @@ Item {
       root.engineBusy = false
       if (!msg || msg.kind !== "result") return
       root.result = Clamp.annotate(root.bench, root.netlist, msg.result)
+      if (msg.result) root.driveArena(msg.result.simTime)
       if (root.pendingLoad) { root.pendingLoad = false; root.loadEngine() }
     }
   }

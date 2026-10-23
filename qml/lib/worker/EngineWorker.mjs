@@ -73,11 +73,15 @@ WorkerScript.onMessage = function (msg) {
     var h = msg.dt > 0 ? msg.dt : 0.001
     var t0 = Date.now()
     var result = null
+    var done = 0
     for (var i = 0; i < steps; i++) {
       result = Engine.solve(netlist, state, h)
+      done++
       if (!result || result.ok === false) break
       if (Date.now() - t0 > 25) break
     }
+    // Simulated seconds this reply covers, so the arena can move in sim time.
+    if (result) result.simTime = done * h
     WorkerScript.sendMessage({ kind: "result", result: result })
   }
 }

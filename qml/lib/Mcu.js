@@ -398,7 +398,10 @@ function create(program) {
     serial: "",
     error: "",
     errorLine: 0,
-    gen: null,
+    frames: [],            // call stack of the running sketch
+    depth: 0,
+    pendOps: 0,
+    pendWait: null,
     started: false,
     globals: new Scope(null),
     randState: 12345,
@@ -411,7 +414,7 @@ function create(program) {
 }
 
 function resetVm(vm) {
-  vm.time = 0; vm.wakeAt = 0; vm.serial = ""; vm.error = ""; vm.errorLine = 0; vm.started = false; vm.gen = null
+  vm.time = 0; vm.wakeAt = 0; vm.serial = ""; vm.error = ""; vm.errorLine = 0; vm.started = false; vm.frames = []; vm.depth = 0; vm.pendOps = 0; vm.pendWait = null
   vm.pins = []
   for (var i = 0; i < PIN_COUNT; i++) vm.pins.push({ mode: "in", level: 0, pwm: null, servo: null, tone: null })
   vm.globals = new Scope(null)
@@ -422,154 +425,380 @@ function serialWrite(vm, text) {
   if (vm.serial.length > 4000) vm.serial = vm.serial.substring(vm.serial.length - 3000)
 }
 
-// Run until `until` µs. Each pass of loop() is a generator, so delay() just
-// pauses it. A budget of steps per call keeps a tight loop from hanging.
+// Run until `until` µs. Each function is compiled to a flat list of steps
+// (below) and run on an explicit stack, so delay() just stops between steps
+// and picks up there next time. No generators: the shell's JavaScript engine
+// crashes on deeply nested generators. A budget of statements per call keeps a
+// tight loop from hanging.
 function runVm(vm, until, io) {
   if (vm.error) return
   vm.io = io
   var budget = STEP_BUDGET
+  var guard = STEP_BUDGET * 400   // steps, in case a loop somehow has no statement in it
   try {
     if (!vm.started) {
       vm.started = true
-      var init = initGlobals(vm)
-      while (!init.next().done) {}
-      vm.gen = callFunction(vm, "setup", [], 0)
+      runToEnd(vm, codeOf(vm.program, "", 0))
+      enterFunction(vm, "setup", [], 0)
       vm.inSetup = true
     }
-    while (vm.time < until && budget > 0) {
+    while (vm.time < until && budget > 0 && guard-- > 0) {
       if (vm.wakeAt > vm.time) { vm.time = Math.min(vm.wakeAt, until); continue }
-      var step = vm.gen.next()
-      budget--
-      if (step.done) {
+      if (vm.frames.length === 0) {
         vm.inSetup = false
-        vm.gen = callFunction(vm, "loop", [], 0)
+        enterFunction(vm, "loop", [], 0)
         vm.time += 1
+        budget--
         continue
       }
-      var y = step.value
-      if (y && y.delay !== undefined) vm.wakeAt = vm.time + Math.max(0, y.delay)
-      else vm.time += (y && y.ops ? y.ops : 1) * OP_MICROS
+      var f = vm.frames[vm.frames.length - 1]
+      var ins = f.code[f.pc++]
+      if (ins.o === "stmt") { vm.time += OP_MICROS; budget--; continue }
+      step(vm, f, ins)
+      if (vm.pendOps) { vm.time += vm.pendOps * OP_MICROS; vm.pendOps = 0; budget-- }
+      if (vm.pendWait !== null) { vm.wakeAt = vm.time + vm.pendWait; vm.pendWait = null; budget-- }
     }
     if (vm.time < until) vm.time = until  // out of budget: the sketch is busy, let time move on
   } catch (e) {
     vm.error = e && e.message ? e.message : String(e)
     vm.errorLine = e && e.line ? e.line : 0
+    vm.frames = []
+    vm.depth = 0
   }
 }
 
-function* initGlobals(vm) {
-  var gl = vm.program.globals
-  for (var i = 0; i < gl.length; i++) yield* declare(vm, vm.globals, gl[i])
+// Global variables: run their set-up code straight through before setup().
+function runToEnd(vm, code) {
+  var frame = { code: code, pc: 0, scope: vm.globals, stack: [], fn: null }
+  var base = vm.frames.length
+  vm.frames.push(frame)
+  while (vm.frames.length > base) {
+    var f = vm.frames[vm.frames.length - 1]
+    if (f.pc >= f.code.length) { vm.frames.pop(); continue }
+    var ins = f.code[f.pc++]
+    if (ins.o !== "stmt") step(vm, f, ins)
+    vm.pendOps = 0
+    vm.pendWait = null
+  }
 }
 
-function* declare(vm, scope, d) {
+function enterFunction(vm, name, args, line) {
+  var fn = vm.program.funcs[name]
+  if (!fn) throw new RuntimeError(line, "There is no function called '" + name + "'.")
+  if (args.length !== fn.params.length) throw new RuntimeError(line, name + "() needs " + fn.params.length + " value" + (fn.params.length === 1 ? "" : "s") + " but got " + args.length + ".")
+  vm.depth = (vm.depth || 0) + 1
+  if (vm.depth > 64) { vm.depth = 0; throw new RuntimeError(line, "Too many functions calling each other (more than 64 deep).") }
+  var scope = new Scope(vm.globals)
+  for (var i = 0; i < args.length; i++) scope.vars[fn.params[i].name] = { type: fn.params[i].type, value: coerce(fn.params[i].type, args[i]) }
+  vm.frames.push({ code: codeOf(vm.program, name, line), pc: 0, scope: scope, stack: [], fn: fn })
+}
+
+// One step. Expression steps push and pop values on the frame's stack.
+function step(vm, f, ins) {
+  var st = f.stack, n = ins.n, a, b, cell, lv
+  switch (ins.o) {
+    case "push": st.push(ins.v); return
+    case "pop": st.pop(); return
+    case "dup": st.push(st[st.length - 1]); return
+    case "jmp": f.pc = ins.t; return
+    case "jf": if (!st.pop()) f.pc = ins.t; return
+    case "jt": if (st.pop()) f.pc = ins.t; return
+    case "eqj": b = st.pop(); if (st[st.length - 1] === b) f.pc = ins.t; return
+    case "bool": st.push(st.pop() ? 1 : 0); return
+    case "enter": f.scope = new Scope(f.scope); return
+    case "leave": f.scope = f.scope.parent; return
+    case "err": throw new RuntimeError(ins.line, ins.msg)
+    case "load":
+      cell = lookup(vm, f.scope, n)
+      if (cell.constant !== undefined) { st.push(cell.constant); return }
+      if (cell.array) throw new RuntimeError(n.line, n.name + " is an array; use " + n.name + "[i].")
+      st.push(cell.value); return
+    case "loadi": lv = indexCell(vm, f.scope, n, st.pop()); st.push(lv.get()); return
+    case "set":
+    case "seti":
+      a = st.pop()
+      lv = ins.o === "seti" ? indexCell(vm, f.scope, n.target, st.pop()) : varCell(vm, f.scope, n.target)
+      if (n.op !== "=") a = arith(n.op.substring(0, n.op.length - 1), lv.get(), a, lv.type !== "float" && typeOf(vm, f.scope, n.value) !== "float", n.line)
+      lv.set(a)
+      st.push(lv.get()); return
+    case "incr":
+    case "incri":
+      lv = ins.o === "incri" ? indexCell(vm, f.scope, n.target, st.pop()) : varCell(vm, f.scope, n.target)
+      a = lv.get()
+      lv.set(a + (n.op === "++" ? 1 : -1))
+      st.push(n.prefix ? lv.get() : a); return
+    case "bin":
+      b = st.pop(); a = st.pop()
+      st.push(arith(n.op, a, b, typeOf(vm, f.scope, n.a) !== "float" && typeOf(vm, f.scope, n.b) !== "float", n.line)); return
+    case "un":
+      a = st.pop()
+      st.push(n.op === "!" ? (a ? 0 : 1) : n.op === "-" ? -a : n.op === "~" ? ~a : +a); return
+    case "cast": st.push(coerce(n.type, st.pop())); return
+    case "decl": declare(vm, f.scope, n, st, ins.count); return
+    case "call":
+      a = st.splice(st.length - ins.argc, ins.argc)
+      enterFunction(vm, n.callee.name, a, n.line)
+      return
+    case "ret":
+      a = st.pop()
+      vm.frames.pop()
+      vm.depth--
+      if (f.fn && vm.frames.length) vm.frames[vm.frames.length - 1].stack.push(f.fn.type === "void" ? 0 : coerce(f.fn.type, a))
+      return
+    case "builtin":
+      a = st.splice(st.length - ins.argc, ins.argc)
+      st.push(builtin(vm, f.scope, n, a)); return
+    case "method":
+      cell = ins.indexed ? indexCell(vm, f.scope, n.callee.target, st.pop()) : null
+      a = st.splice(st.length - ins.argc, ins.argc)
+      st.push(method(vm, f.scope, n, a, cell)); return
+  }
+  throw new RuntimeError(0, "I can't run this part of the sketch.")
+}
+
+// A declaration. Its size and starting values are already on the stack.
+function declare(vm, scope, d, st, count) {
+  var vals = count ? st.splice(st.length - count, count) : []
   if (d.type === "Servo") {
     if (d.size !== null) {
-      var n = yield* evaluate(vm, scope, d.size)
+      var n = vals[0]
       var arr = []; for (var k = 0; k < n; k++) arr.push({ servo: true, pin: -1, angle: 90 })
       scope.vars[d.name] = { type: "Servo", value: arr, array: true }
     } else scope.vars[d.name] = { type: "Servo", value: { servo: true, pin: -1, angle: 90 } }
     return
   }
   if (d.size !== null) {
-    var size = d.size === -1 ? (d.init && d.init.items ? d.init.items.length : 0) : yield* evaluate(vm, scope, d.size)
+    var items = d.init && d.init.kind === "list" ? d.init.items.length : 0
+    var size = d.size === -1 ? items : vals.shift()
     if (size < 0 || size > 4096) throw new RuntimeError(d.line, "Array " + d.name + " is too big (keep it under 4096).")
     var a = []
     for (var j = 0; j < size; j++) a.push(d.type === "string" ? "" : 0)
     if (d.init && d.init.kind === "list") {
-      for (var m = 0; m < d.init.items.length && m < size; m++) a[m] = coerce(d.type, yield* evaluate(vm, scope, d.init.items[m]))
+      for (var m = 0; m < vals.length && m < size; m++) a[m] = coerce(d.type, vals[m])
     } else if (d.init && d.init.kind === "str") {
       for (var s = 0; s < d.init.value.length && s < size; s++) a[s] = d.init.value.charCodeAt(s)
     }
     scope.vars[d.name] = { type: d.type, value: a, array: true }
     return
   }
-  var v = d.init ? yield* evaluate(vm, scope, d.init) : (d.type === "string" ? "" : 0)
+  var v = d.init ? vals[0] : (d.type === "string" ? "" : 0)
   scope.vars[d.name] = { type: d.type, value: d.type === "string" ? String(v) : coerce(d.type, v) }
 }
 
-function Signal(kind, value) { this.kind = kind; this.value = value }
+// ------------------------------------------------------------------ compiler
+// Statements and expressions become steps. Jumps use step numbers. Loops and
+// switches remember how many block scopes and stacked values to undo on
+// break/continue.
 
-function* callFunction(vm, name, args, line) {
-  var f = vm.program.funcs[name]
-  if (!f) throw new RuntimeError(line, "There is no function called '" + name + "'.")
-  if (args.length !== f.params.length) throw new RuntimeError(line, name + "() needs " + f.params.length + " value" + (f.params.length === 1 ? "" : "s") + " but got " + args.length + ".")
-  vm.depth = (vm.depth || 0) + 1
-  if (vm.depth > 64) { vm.depth = 0; throw new RuntimeError(line, "Too many functions calling each other (more than 64 deep).") }
-  var scope = new Scope(vm.globals)
-  for (var i = 0; i < args.length; i++) scope.vars[f.params[i].name] = { type: f.params[i].type, value: coerce(f.params[i].type, args[i]) }
-  var result = 0
-  try {
-    yield* execBlock(vm, scope, f.body.body)
-  } catch (sig) {
-    if (sig instanceof Signal && sig.kind === "return") result = sig.value
-    else { vm.depth--; throw sig }
+function codeOf(program, name, line) {
+  if (!program.code) program.code = {}
+  if (program.code[name]) return program.code[name]
+  var c = { out: [], scopes: 0, extra: 0, loops: [], funcs: program.funcs }
+  if (name === "") {
+    for (var i = 0; i < program.globals.length; i++) compileDecl(c, program.globals[i])
+  } else {
+    var fn = program.funcs[name]
+    compileBody(c, fn.body.body)
+    emit(c, { o: "push", v: 0 }); emit(c, { o: "ret" })
   }
-  vm.depth--
-  return f.type === "void" ? 0 : coerce(f.type, result)
+  program.code[name] = c.out
+  return c.out
 }
 
-function* execBlock(vm, scope, body) {
-  for (var i = 0; i < body.length; i++) yield* exec(vm, scope, body[i])
+function emit(c, ins) { c.out.push(ins); return c.out.length - 1 }
+function here(c) { return c.out.length }
+
+function compileBody(c, body) { for (var i = 0; i < body.length; i++) compileStmt(c, body[i]) }
+
+function compileDecl(c, d) {
+  var count = 0
+  if (d.type === "Servo") {
+    if (d.size !== null) { compileExpr(c, d.size); count = 1 }
+  } else if (d.size !== null) {
+    if (d.size !== -1) { compileExpr(c, d.size); count++ }
+    if (d.init && d.init.kind === "list") for (var m = 0; m < d.init.items.length; m++) { compileExpr(c, d.init.items[m]); count++ }
+  } else if (d.init) { compileExpr(c, d.init); count = 1 }
+  emit(c, { o: "decl", n: d, count: count })
 }
 
-function* exec(vm, scope, s) {
-  yield { ops: 1 }
+// Undo scopes and stacked values down to loop/switch context `ctx`.
+function unwind(c, ctx) {
+  for (var s = c.scopes; s > ctx.scopes; s--) emit(c, { o: "leave" })
+  for (var e = c.extra; e > ctx.extra; e--) emit(c, { o: "pop" })
+}
+
+function compileStmt(c, s) {
+  emit(c, { o: "stmt" })
+  var top, cond, ctx, k
   switch (s.kind) {
     case "empty": return
-    case "block": yield* execBlock(vm, new Scope(scope), s.body); return
-    case "decls": for (var i = 0; i < s.list.length; i++) yield* declare(vm, scope, s.list[i]); return
-    case "expr": yield* evaluate(vm, scope, s.e); return
+    case "block":
+      emit(c, { o: "enter" }); c.scopes++
+      compileBody(c, s.body)
+      emit(c, { o: "leave" }); c.scopes--
+      return
+    case "decls": for (var i = 0; i < s.list.length; i++) compileDecl(c, s.list[i]); return
+    case "expr": compileExpr(c, s.e); emit(c, { o: "pop" }); return
     case "if":
-      if (yield* evaluate(vm, scope, s.cond)) yield* exec(vm, scope, s.then)
-      else if (s.els) yield* exec(vm, scope, s.els)
+      compileExpr(c, s.cond)
+      var jf = emit(c, { o: "jf", t: 0 })
+      compileStmt(c, s.then)
+      if (s.els) {
+        var je = emit(c, { o: "jmp", t: 0 })
+        c.out[jf].t = here(c)
+        compileStmt(c, s.els)
+        c.out[je].t = here(c)
+      } else c.out[jf].t = here(c)
       return
     case "while":
-      while (yield* evaluate(vm, scope, s.cond)) {
-        try { yield* exec(vm, scope, s.body) } catch (sig) {
-          if (sig instanceof Signal && sig.kind === "break") break
-          if (sig instanceof Signal && sig.kind === "continue") continue
-          throw sig
-        }
-      }
+      top = here(c)
+      compileExpr(c, s.cond)
+      cond = emit(c, { o: "jf", t: 0 })
+      ctx = { scopes: c.scopes, extra: c.extra, breaks: [], conts: [] }
+      c.loops.push(ctx)
+      compileStmt(c, s.body)
+      c.loops.pop()
+      emit(c, { o: "jmp", t: top })
+      c.out[cond].t = here(c)
+      patch(c, ctx.breaks, here(c)); patch(c, ctx.conts, top)
       return
     case "dowhile":
-      do {
-        try { yield* exec(vm, scope, s.body) } catch (sig2) {
-          if (sig2 instanceof Signal && sig2.kind === "break") break
-          if (sig2 instanceof Signal && sig2.kind === "continue") continue
-          throw sig2
-        }
-      } while (yield* evaluate(vm, scope, s.cond))
+      top = here(c)
+      ctx = { scopes: c.scopes, extra: c.extra, breaks: [], conts: [] }
+      c.loops.push(ctx)
+      compileStmt(c, s.body)
+      c.loops.pop()
+      var contAt = here(c)
+      compileExpr(c, s.cond)
+      emit(c, { o: "jt", t: top })
+      patch(c, ctx.breaks, here(c)); patch(c, ctx.conts, contAt)
       return
     case "for":
-      var fs = new Scope(scope)
-      if (s.init) yield* exec(vm, fs, s.init)
-      while (s.cond === null || (yield* evaluate(vm, fs, s.cond))) {
-        try { yield* exec(vm, fs, s.body) } catch (sig3) {
-          if (sig3 instanceof Signal && sig3.kind === "break") break
-          if (!(sig3 instanceof Signal && sig3.kind === "continue")) throw sig3
-        }
-        if (s.step) yield* evaluate(vm, fs, s.step)
-      }
+      emit(c, { o: "enter" }); c.scopes++
+      if (s.init) compileStmt(c, s.init)
+      top = here(c)
+      cond = -1
+      if (s.cond) { compileExpr(c, s.cond); cond = emit(c, { o: "jf", t: 0 }) }
+      ctx = { scopes: c.scopes, extra: c.extra, breaks: [], conts: [] }
+      c.loops.push(ctx)
+      compileStmt(c, s.body)
+      c.loops.pop()
+      var stepAt = here(c)
+      if (s.step) { compileExpr(c, s.step); emit(c, { o: "pop" }) }
+      emit(c, { o: "jmp", t: top })
+      var end = here(c)
+      if (cond >= 0) c.out[cond].t = end
+      patch(c, ctx.breaks, end); patch(c, ctx.conts, stepAt)
+      emit(c, { o: "leave" }); c.scopes--
       return
     case "switch":
-      var v = yield* evaluate(vm, scope, s.value)
-      var start = -1
-      for (var c = 0; c < s.cases.length && start < 0; c++)
-        if (s.cases[c].value !== null && (yield* evaluate(vm, scope, s.cases[c].value)) === v) start = c
-      if (start < 0) for (var d = 0; d < s.cases.length; d++) if (s.cases[d].value === null) start = d
-      if (start < 0) return
-      try {
-        for (var k = start; k < s.cases.length; k++) yield* execBlock(vm, scope, s.cases[k].body)
-      } catch (sig4) {
-        if (!(sig4 instanceof Signal && sig4.kind === "break")) throw sig4
+      // The value stays on the stack while the cases run; break pops it.
+      compileExpr(c, s.value)
+      c.extra++
+      var hits = []
+      for (k = 0; k < s.cases.length; k++) {
+        if (s.cases[k].value === null) { hits.push(-1); continue }
+        compileExpr(c, s.cases[k].value)
+        hits.push(emit(c, { o: "eqj", t: 0 }))
       }
+      var miss = emit(c, { o: "jmp", t: 0 })
+      ctx = { scopes: c.scopes, extra: c.extra - 1, breaks: [], conts: null, isSwitch: true }
+      c.loops.push(ctx)
+      var def = -1
+      for (k = 0; k < s.cases.length; k++) {
+        if (hits[k] >= 0) c.out[hits[k]].t = here(c)
+        else if (def < 0) def = here(c)
+        compileBody(c, s.cases[k].body)
+      }
+      c.loops.pop()
+      var done = here(c)
+      emit(c, { o: "pop" })
+      c.extra--
+      c.out[miss].t = def >= 0 ? def : done
+      patch(c, ctx.breaks, done + 1)
       return
-    case "break": throw new Signal("break")
-    case "continue": throw new Signal("continue")
-    case "return": throw new Signal("return", s.e ? yield* evaluate(vm, scope, s.e) : 0)
+    case "break":
+      ctx = c.loops[c.loops.length - 1]
+      if (!ctx) { emit(c, { o: "err", line: s.line, msg: "break only works inside a loop or switch." }); return }
+      unwind(c, ctx)
+      ctx.breaks.push(emit(c, { o: "jmp", t: 0 }))
+      return
+    case "continue":
+      for (k = c.loops.length - 1; k >= 0 && c.loops[k].isSwitch; k--) {}
+      ctx = k >= 0 ? c.loops[k] : null
+      if (!ctx) { emit(c, { o: "err", line: s.line, msg: "continue only works inside a loop." }); return }
+      unwind(c, ctx)
+      ctx.conts.push(emit(c, { o: "jmp", t: 0 }))
+      return
+    case "return":
+      if (s.e) compileExpr(c, s.e); else emit(c, { o: "push", v: 0 })
+      emit(c, { o: "ret" })
+      return
   }
+}
+
+function patch(c, list, t) { for (var i = 0; i < list.length; i++) c.out[list[i]].t = t }
+
+function compileExpr(c, n) {
+  var j1, j2
+  switch (n.kind) {
+    case "num": case "str": emit(c, { o: "push", v: n.value }); return
+    case "var": emit(c, { o: "load", n: n }); return
+    case "index": compileIndexTarget(c, n); emit(c, { o: "loadi", n: n }); return
+    case "assign":
+      if (n.target.kind === "index") { compileIndexTarget(c, n.target); compileExpr(c, n.value); emit(c, { o: "seti", n: n }); return }
+      if (n.target.kind !== "var") { emit(c, { o: "err", line: n.line, msg: "You can only assign to a variable." }); return }
+      compileExpr(c, n.value); emit(c, { o: "set", n: n }); return
+    case "incr":
+      if (n.target.kind === "index") { compileIndexTarget(c, n.target); emit(c, { o: "incri", n: n }); return }
+      if (n.target.kind !== "var") { emit(c, { o: "err", line: n.line, msg: "You can only assign to a variable." }); return }
+      emit(c, { o: "incr", n: n }); return
+    case "bin":
+      if (n.op === "&&" || n.op === "||") {
+        compileExpr(c, n.a)
+        j1 = emit(c, { o: n.op === "&&" ? "jf" : "jt", t: 0 })
+        compileExpr(c, n.b)
+        emit(c, { o: "bool" })
+        j2 = emit(c, { o: "jmp", t: 0 })
+        c.out[j1].t = here(c)
+        emit(c, { o: "push", v: n.op === "&&" ? 0 : 1 })
+        c.out[j2].t = here(c)
+        return
+      }
+      compileExpr(c, n.a); compileExpr(c, n.b); emit(c, { o: "bin", n: n }); return
+    case "un": compileExpr(c, n.a); emit(c, { o: "un", n: n }); return
+    case "cast": compileExpr(c, n.a); emit(c, { o: "cast", n: n }); return
+    case "cond":
+      compileExpr(c, n.c)
+      j1 = emit(c, { o: "jf", t: 0 })
+      compileExpr(c, n.a)
+      j2 = emit(c, { o: "jmp", t: 0 })
+      c.out[j1].t = here(c)
+      compileExpr(c, n.b)
+      c.out[j2].t = here(c)
+      return
+    case "call": compileCall(c, n); return
+    case "member": emit(c, { o: "err", line: n.line, msg: "'" + n.name + "' needs ( ) to be called." }); return
+    case "list": emit(c, { o: "err", line: n.line, msg: "A { } list can only set up an array." }); return
+  }
+  emit(c, { o: "err", line: n.line || 0, msg: "I can't run this part of the sketch." })
+}
+
+// arr[i]: only the index is computed; the array is looked up when used.
+function compileIndexTarget(c, n) { compileExpr(c, n.index) }
+
+function compileCall(c, n) {
+  var callee = n.callee, i
+  if (callee.kind === "member") {
+    for (i = 0; i < n.args.length; i++) compileExpr(c, n.args[i])
+    var indexed = callee.target.kind === "index"
+    if (indexed) compileExpr(c, callee.target.index)
+    emit(c, { o: "method", n: n, argc: n.args.length, indexed: indexed })
+    return
+  }
+  if (callee.kind !== "var") { emit(c, { o: "err", line: n.line, msg: "Only functions can be called." }); return }
+  for (i = 0; i < n.args.length; i++) compileExpr(c, n.args[i])
+  emit(c, { o: c.funcs[callee.name] ? "call" : "builtin", n: n, argc: n.args.length })
 }
 
 function lookup(vm, scope, node) {
@@ -584,20 +813,144 @@ function lookup(vm, scope, node) {
   return null
 }
 
-function* lvalue(vm, scope, node) {
-  if (node.kind === "var") {
-    var cell = lookup(vm, scope, node)
-    if (cell.constant !== undefined) throw new RuntimeError(node.line, "You can't change " + node.name + ", it's a built-in constant.")
-    return { get: function () { return cell.value }, set: function (v) { cell.value = cell.type === "string" ? String(v) : coerce(cell.type, v) }, type: cell.type }
+function varCell(vm, scope, node) {
+  var cell = lookup(vm, scope, node)
+  if (cell.constant !== undefined) throw new RuntimeError(node.line, "You can't change " + node.name + ", it's a built-in constant.")
+  return { get: function () { return cell.value }, set: function (v) { cell.value = cell.type === "string" ? String(v) : coerce(cell.type, v) }, type: cell.type }
+}
+
+function indexCell(vm, scope, node, index) {
+  var arr = lookup(vm, scope, node.target)
+  if (!arr || !arr.array) throw new RuntimeError(node.line, "Only arrays can use [ ].")
+  var i = Math.trunc(index)
+  if (i < 0 || i >= arr.value.length) throw new RuntimeError(node.line, "Array index " + i + " is outside " + node.target.name + " (size " + arr.value.length + ").")
+  return { get: function () { return arr.value[i] }, set: function (v) { arr.value[i] = coerce(arr.type, v) }, type: arr.type }
+}
+
+// Sketch.method(...) calls: Serial and Servo. `cell` is the array element
+// for servos[i].write(...).
+function method(vm, scope, node, a, cell) {
+  var callee = node.callee, line = node.line, obj = callee.target
+  if (obj.kind === "object" && obj.name === "Serial") {
+    if (callee.name === "begin" || callee.name === "flush") return 0
+    if (callee.name === "print" || callee.name === "println" || callee.name === "write") {
+      var text = a.length ? formatValue(a[0], a[1], node.args[0], vm, scope) : ""
+      serialWrite(vm, text + (callee.name === "println" ? "\n" : ""))
+      return text.length
+    }
+    if (callee.name === "available") return 0
+    if (callee.name === "read") return -1
+    throw new RuntimeError(line, "Serial." + callee.name + "() isn't supported here.")
   }
-  if (node.kind === "index") {
-    var arr = lookup(vm, scope, node.target)
-    if (!arr || !arr.array) throw new RuntimeError(node.line, "Only arrays can use [ ].")
-    var i = Math.trunc(yield* evaluate(vm, scope, node.index))
-    if (i < 0 || i >= arr.value.length) throw new RuntimeError(node.line, "Array index " + i + " is outside " + node.target.name + " (size " + arr.value.length + ").")
-    return { get: function () { return arr.value[i] }, set: function (v) { arr.value[i] = coerce(arr.type, v) }, type: arr.type }
+  if (!cell) cell = lookup(vm, scope, obj)
+  var servo = obj.kind === "index" ? cell.get() : cell && cell.value
+  if (servo && servo.servo) {
+    if (callee.name === "attach") {
+      need("attach", a, 1, line)
+      servo.pin = checkPin(a[0], line)
+      vm.pins[servo.pin].mode = "out"
+      vm.pins[servo.pin].servo = servo.angle
+      return 1
+    }
+    if (callee.name === "write") {
+      need("write", a, 1, line)
+      servo.angle = Math.max(0, Math.min(180, Math.trunc(a[0])))
+      if (servo.pin >= 0) vm.pins[servo.pin].servo = servo.angle
+      return 0
+    }
+    if (callee.name === "writeMicroseconds") {
+      servo.angle = Math.max(0, Math.min(180, Math.round((a[0] - 544) / (2400 - 544) * 180)))
+      if (servo.pin >= 0) vm.pins[servo.pin].servo = servo.angle
+      return 0
+    }
+    if (callee.name === "read") return servo.angle
+    if (callee.name === "attached") return servo.pin >= 0 ? 1 : 0
+    if (callee.name === "detach") { if (servo.pin >= 0) vm.pins[servo.pin].servo = null; servo.pin = -1; return 0 }
   }
-  throw new RuntimeError(node.line, "You can only assign to a variable.")
+  if (cell && cell.type === "string" && callee.name === "length") return String(cell.value).length
+  throw new RuntimeError(line, "I don't know ." + callee.name + "() here.")
+}
+
+// Built-in Arduino functions. delay() and friends set vm.pendWait (µs) and
+// the runner sleeps after this step; analogRead costs time with vm.pendOps.
+function builtin(vm, scope, node, v) {
+  var name = node.callee.name, line = node.line, p
+  switch (name) {
+    case "pinMode":
+      need(name, v, 2, line); p = checkPin(v[0], line)
+      vm.pins[p].mode = v[1] === 1 ? "out" : v[1] === 2 ? "pullup" : "in"
+      if (vm.pins[p].mode !== "out") { vm.pins[p].pwm = null; vm.pins[p].level = 0 }
+      return 0
+    case "digitalWrite":
+      need(name, v, 2, line); p = checkPin(v[0], line)
+      vm.pins[p].pwm = null
+      vm.pins[p].tone = null
+      if (vm.pins[p].mode === "out") vm.pins[p].level = v[1] ? 1 : 0
+      else vm.pins[p].mode = v[1] ? "pullup" : "in"   // like the real chip: HIGH on an input turns on the pull-up
+      return 0
+    case "digitalRead":
+      need(name, v, 1, line); p = checkPin(v[0], line)
+      if (vm.pins[p].mode === "out") return vm.pins[p].level
+      return volts(vm, p) > 2.5 ? 1 : 0
+    case "analogRead":
+      need(name, v, 1, line); p = checkPin(v[0] < 6 ? v[0] + 14 : v[0], line)
+      if (p < 14) throw new RuntimeError(line, "analogRead() works on A0–A5.")
+      vm.pendOps += 100    // a real conversion takes about 100 µs
+      return Math.max(0, Math.min(1023, Math.round(volts(vm, p) / 5 * 1023)))
+    case "analogWrite":
+      need(name, v, 2, line); p = checkPin(v[0], line)
+      vm.pins[p].mode = "out"
+      var duty = Math.max(0, Math.min(255, Math.trunc(v[1])))
+      if (!PWM_PINS[p]) { vm.pins[p].pwm = null; vm.pins[p].level = duty >= 128 ? 1 : 0; return 0 }
+      vm.pins[p].pwm = duty
+      vm.pins[p].level = duty > 0 ? 1 : 0
+      return 0
+    case "tone":
+      need(name, v, 2, line); p = checkPin(v[0], line)
+      vm.pins[p].mode = "out"; vm.pins[p].tone = Math.max(31, Math.trunc(v[1])); vm.pins[p].pwm = 127
+      return 0
+    case "noTone":
+      need(name, v, 1, line); p = checkPin(v[0], line)
+      vm.pins[p].tone = null; vm.pins[p].pwm = null; vm.pins[p].level = 0
+      return 0
+    case "delay": need(name, v, 1, line); vm.pendWait = Math.max(0, v[0]) * 1000; return 0
+    case "delayMicroseconds": need(name, v, 1, line); vm.pendWait = Math.max(0, v[0]); return 0
+    case "millis": return Math.floor(vm.time / 1000)
+    case "micros": return Math.floor(vm.time)
+    case "pulseIn":
+      need(name, v, 2, line); p = checkPin(v[0], line)
+      var us = vm.io && vm.io.pulseIn ? Number(vm.io.pulseIn(p, v[1], v.length > 2 ? v[2] : 1000000)) || 0 : 0
+      vm.pendWait = us > 0 ? us : (v.length > 2 ? v[2] : 1000000)
+      return Math.trunc(us)
+    case "map":
+      need(name, v, 5, line)
+      if (v[2] === v[1]) return v[3]
+      return Math.trunc((v[0] - v[1]) * (v[4] - v[3]) / (v[2] - v[1]) + v[3])
+    case "constrain": need(name, v, 3, line); return Math.min(Math.max(v[0], v[1]), v[2])
+    case "min": need(name, v, 2, line); return Math.min(v[0], v[1])
+    case "max": need(name, v, 2, line); return Math.max(v[0], v[1])
+    case "abs": case "fabs": need(name, v, 1, line); return Math.abs(v[0])
+    case "sqrt": return Math.sqrt(v[0])
+    case "pow": return Math.pow(v[0], v[1])
+    case "sin": return Math.sin(v[0])
+    case "cos": return Math.cos(v[0])
+    case "tan": return Math.tan(v[0])
+    case "atan2": return Math.atan2(v[0], v[1])
+    case "floor": return Math.floor(v[0])
+    case "ceil": return Math.ceil(v[0])
+    case "round": return Math.round(v[0])
+    case "log": return Math.log(v[0])
+    case "exp": return Math.exp(v[0])
+    case "random":
+      vm.randState = (vm.randState * 1103515245 + 12345) & 0x7fffffff
+      var r = vm.randState / 0x7fffffff
+      if (v.length >= 2) return Math.floor(v[0] + r * (v[1] - v[0]))
+      return Math.floor(r * (v.length ? v[0] : 2147483647))
+    case "randomSeed": vm.randState = Math.trunc(v[0]) & 0x7fffffff || 1; return 0
+    case "bitRead": return (v[0] >> v[1]) & 1
+    case "String": return v.length ? String(v[0]) : ""
+  }
+  throw new RuntimeError(line, "There is no function called '" + name + "'. Check the spelling (capital letters matter).")
 }
 
 function typeOf(vm, scope, node) {
@@ -625,49 +978,6 @@ function typeOf(vm, scope, node) {
       return "int"
     case "assign": return typeOf(vm, scope, node.target)
     default: return "int"
-  }
-}
-
-function* evaluate(vm, scope, node) {
-  switch (node.kind) {
-    case "num": return node.value
-    case "str": return node.value
-    case "var":
-      var c = lookup(vm, scope, node)
-      if (c.constant !== undefined) return c.constant
-      if (c.array) throw new RuntimeError(node.line, node.name + " is an array; use " + node.name + "[i].")
-      return c.value
-    case "index": var lv = yield* lvalue(vm, scope, node); return lv.get()
-    case "assign":
-      var target = yield* lvalue(vm, scope, node.target)
-      var val = yield* evaluate(vm, scope, node.value)
-      if (node.op !== "=") val = arith(node.op.substring(0, node.op.length - 1), target.get(), val, target.type !== "float" && typeOf(vm, scope, node.value) !== "float", node.line)
-      target.set(val)
-      return target.get()
-    case "incr":
-      var t = yield* lvalue(vm, scope, node.target)
-      var old = t.get()
-      t.set(old + (node.op === "++" ? 1 : -1))
-      return node.prefix ? t.get() : old
-    case "bin":
-      if (node.op === "&&") return (yield* evaluate(vm, scope, node.a)) ? ((yield* evaluate(vm, scope, node.b)) ? 1 : 0) : 0
-      if (node.op === "||") return (yield* evaluate(vm, scope, node.a)) ? 1 : ((yield* evaluate(vm, scope, node.b)) ? 1 : 0)
-      var a = yield* evaluate(vm, scope, node.a)
-      var b = yield* evaluate(vm, scope, node.b)
-      var ints = typeOf(vm, scope, node.a) !== "float" && typeOf(vm, scope, node.b) !== "float"
-      return arith(node.op, a, b, ints, node.line)
-    case "un":
-      var u = yield* evaluate(vm, scope, node.a)
-      if (node.op === "!") return u ? 0 : 1
-      if (node.op === "-") return -u
-      if (node.op === "~") return ~u
-      return +u
-    case "cast": return coerce(node.type, yield* evaluate(vm, scope, node.a))
-    case "cond": return (yield* evaluate(vm, scope, node.c)) ? yield* evaluate(vm, scope, node.a) : yield* evaluate(vm, scope, node.b)
-    case "call": return yield* call(vm, scope, node)
-    case "member": throw new RuntimeError(node.line, "'" + node.name + "' needs ( ) to be called.")
-    case "list": throw new RuntimeError(node.line, "A { } list can only set up an array.")
-    default: throw new RuntimeError(node.line || 0, "I can't run this part of the sketch.")
   }
 }
 
@@ -706,148 +1016,11 @@ function checkPin(pin, line) {
   return pin
 }
 
-function* args(vm, scope, node) {
-  var out = []
-  for (var i = 0; i < node.args.length; i++) out.push(yield* evaluate(vm, scope, node.args[i]))
-  return out
-}
-
 function need(name, a, n, line) {
   if (a.length < n) throw new RuntimeError(line, name + "() needs " + n + " value" + (n === 1 ? "" : "s") + ".")
 }
 
 function volts(vm, pin) { return vm.io && vm.io.volts ? Number(vm.io.volts(pin)) || 0 : 0 }
-
-function* call(vm, scope, node) {
-  var callee = node.callee, line = node.line
-  // obj.method(...)
-  if (callee.kind === "member") {
-    var obj = callee.target
-    var a = yield* args(vm, scope, node)
-    if (obj.kind === "object" && obj.name === "Serial") {
-      if (callee.name === "begin" || callee.name === "flush") return 0
-      if (callee.name === "print" || callee.name === "println" || callee.name === "write") {
-        var text = a.length ? formatValue(a[0], a[1], node.args[0], vm, scope) : ""
-        serialWrite(vm, text + (callee.name === "println" ? "\n" : ""))
-        return text.length
-      }
-      if (callee.name === "available") return 0
-      if (callee.name === "read") return -1
-      throw new RuntimeError(line, "Serial." + callee.name + "() isn't supported here.")
-    }
-    var cell = obj.kind === "index" ? yield* lvalue(vm, scope, obj) : lookup(vm, scope, obj)
-    var servo = obj.kind === "index" ? cell.get() : cell && cell.value
-    if (servo && servo.servo) {
-      if (callee.name === "attach") {
-        need("attach", a, 1, line)
-        servo.pin = checkPin(a[0], line)
-        vm.pins[servo.pin].mode = "out"
-        vm.pins[servo.pin].servo = servo.angle
-        return 1
-      }
-      if (callee.name === "write") {
-        need("write", a, 1, line)
-        servo.angle = Math.max(0, Math.min(180, Math.trunc(a[0])))
-        if (servo.pin >= 0) vm.pins[servo.pin].servo = servo.angle
-        return 0
-      }
-      if (callee.name === "writeMicroseconds") {
-        servo.angle = Math.max(0, Math.min(180, Math.round((a[0] - 544) / (2400 - 544) * 180)))
-        if (servo.pin >= 0) vm.pins[servo.pin].servo = servo.angle
-        return 0
-      }
-      if (callee.name === "read") return servo.angle
-      if (callee.name === "attached") return servo.pin >= 0 ? 1 : 0
-      if (callee.name === "detach") { if (servo.pin >= 0) vm.pins[servo.pin].servo = null; servo.pin = -1; return 0 }
-    }
-    if (cell && cell.type === "string" && callee.name === "length") return String(cell.value).length
-    throw new RuntimeError(line, "I don't know ." + callee.name + "() here.")
-  }
-  if (callee.kind !== "var") throw new RuntimeError(line, "Only functions can be called.")
-  var name = callee.name
-  if (vm.program.funcs[name]) {
-    var fa = yield* args(vm, scope, node)
-    return yield* callFunction(vm, name, fa, line)
-  }
-  var v = yield* args(vm, scope, node)
-  var p
-  switch (name) {
-    case "pinMode":
-      need(name, v, 2, line); p = checkPin(v[0], line)
-      vm.pins[p].mode = v[1] === 1 ? "out" : v[1] === 2 ? "pullup" : "in"
-      if (vm.pins[p].mode !== "out") { vm.pins[p].pwm = null; vm.pins[p].level = 0 }
-      return 0
-    case "digitalWrite":
-      need(name, v, 2, line); p = checkPin(v[0], line)
-      vm.pins[p].pwm = null
-      vm.pins[p].tone = null
-      if (vm.pins[p].mode === "out") vm.pins[p].level = v[1] ? 1 : 0
-      else vm.pins[p].mode = v[1] ? "pullup" : "in"   // like the real chip: HIGH on an input turns on the pull-up
-      return 0
-    case "digitalRead":
-      need(name, v, 1, line); p = checkPin(v[0], line)
-      if (vm.pins[p].mode === "out") return vm.pins[p].level
-      return volts(vm, p) > 2.5 ? 1 : 0
-    case "analogRead":
-      need(name, v, 1, line); p = checkPin(v[0] < 6 ? v[0] + 14 : v[0], line)
-      if (p < 14) throw new RuntimeError(line, "analogRead() works on A0–A5.")
-      yield { ops: 100 }    // a real conversion takes about 100 µs
-      return Math.max(0, Math.min(1023, Math.round(volts(vm, p) / 5 * 1023)))
-    case "analogWrite":
-      need(name, v, 2, line); p = checkPin(v[0], line)
-      vm.pins[p].mode = "out"
-      var duty = Math.max(0, Math.min(255, Math.trunc(v[1])))
-      if (!PWM_PINS[p]) { vm.pins[p].pwm = null; vm.pins[p].level = duty >= 128 ? 1 : 0; return 0 }
-      vm.pins[p].pwm = duty
-      vm.pins[p].level = duty > 0 ? 1 : 0
-      return 0
-    case "tone":
-      need(name, v, 2, line); p = checkPin(v[0], line)
-      vm.pins[p].mode = "out"; vm.pins[p].tone = Math.max(31, Math.trunc(v[1])); vm.pins[p].pwm = 127
-      return 0
-    case "noTone":
-      need(name, v, 1, line); p = checkPin(v[0], line)
-      vm.pins[p].tone = null; vm.pins[p].pwm = null; vm.pins[p].level = 0
-      return 0
-    case "delay": need(name, v, 1, line); yield { delay: Math.max(0, v[0]) * 1000 }; return 0
-    case "delayMicroseconds": need(name, v, 1, line); yield { delay: Math.max(0, v[0]) }; return 0
-    case "millis": return Math.floor(vm.time / 1000)
-    case "micros": return Math.floor(vm.time)
-    case "pulseIn":
-      need(name, v, 2, line); p = checkPin(v[0], line)
-      var us = vm.io && vm.io.pulseIn ? Number(vm.io.pulseIn(p, v[1], v.length > 2 ? v[2] : 1000000)) || 0 : 0
-      yield { delay: us > 0 ? us : (v.length > 2 ? v[2] : 1000000) }
-      return Math.trunc(us)
-    case "map":
-      need(name, v, 5, line)
-      if (v[2] === v[1]) return v[3]
-      return Math.trunc((v[0] - v[1]) * (v[4] - v[3]) / (v[2] - v[1]) + v[3])
-    case "constrain": need(name, v, 3, line); return Math.min(Math.max(v[0], v[1]), v[2])
-    case "min": need(name, v, 2, line); return Math.min(v[0], v[1])
-    case "max": need(name, v, 2, line); return Math.max(v[0], v[1])
-    case "abs": case "fabs": need(name, v, 1, line); return Math.abs(v[0])
-    case "sqrt": return Math.sqrt(v[0])
-    case "pow": return Math.pow(v[0], v[1])
-    case "sin": return Math.sin(v[0])
-    case "cos": return Math.cos(v[0])
-    case "tan": return Math.tan(v[0])
-    case "atan2": return Math.atan2(v[0], v[1])
-    case "floor": return Math.floor(v[0])
-    case "ceil": return Math.ceil(v[0])
-    case "round": return Math.round(v[0])
-    case "log": return Math.log(v[0])
-    case "exp": return Math.exp(v[0])
-    case "random":
-      vm.randState = (vm.randState * 1103515245 + 12345) & 0x7fffffff
-      var r = vm.randState / 0x7fffffff
-      if (v.length >= 2) return Math.floor(v[0] + r * (v[1] - v[0]))
-      return Math.floor(r * (v.length ? v[0] : 2147483647))
-    case "randomSeed": vm.randState = Math.trunc(v[0]) & 0x7fffffff || 1; return 0
-    case "bitRead": return (v[0] >> v[1]) & 1
-    case "String": return v.length ? String(v[0]) : ""
-  }
-  throw new RuntimeError(line, "There is no function called '" + name + "'. Check the spelling (capital letters matter).")
-}
 
 function formatValue(v, base, node, vm, scope) {
   if (typeof v === "string") return v
