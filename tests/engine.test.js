@@ -1117,6 +1117,73 @@ var both = E.solve(net([
 assert.ok(Math.abs(both.nodeVolts[2]) < 1e-8, "battery − wins")
 assert.ok(Math.abs(both.nodeVolts[1] - 9 * 1000 / 1001.5) < 0.05)
 
+// --- oscilloscope: 60 Hz sine across 1 kΩ ---
+assert.strictEqual(E.isTimeDependent(net([{ id: "s", type: "oscilloscope", nodes: [1, 2, 0], props: {} }], 3)), true)
+var scopeNet = net([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { wave: "sine", freq: 60, amplitude: 5, offset: 0 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } },
+  { id: "s", type: "oscilloscope", nodes: [1, 1, 0], props: { timePerDiv: 0.005, ch2: false } }
+], 2)
+var scopeState = E.createState()
+var scopeDc = E.solve(scopeNet, scopeState, 0)
+assert.strictEqual(scopeState.t, 0)
+assert.strictEqual(scopeState.scope.s.t.length, 1, "a DC solve pushes one sample")
+assert.ok(Math.abs(part(scopeDc, "s").vpp1) < 1e-6, "flat at t=0")
+assert.strictEqual(part(scopeDc, "s").freq1, 0)
+assert.strictEqual(part(scopeDc, "s").samples.t.length, 1)
+assert.strictEqual(part(scopeDc, "s").pinCurrents.length, 3)
+assert.ok(Math.abs(part(scopeDc, "s").pinCurrents[0] + part(scopeDc, "s").pinCurrents[1] + part(scopeDc, "s").pinCurrents[2]) < 1e-12)
+
+var scopeH = 1 / 2400
+var scopeSteps = Math.round(0.1 / scopeH)
+var scopeLast = null
+for (var scopeI = 0; scopeI < scopeSteps; scopeI++) scopeLast = E.solve(scopeNet, scopeState, scopeH)
+var scopePart = part(scopeLast, "s")
+console.log("scope vpp", scopePart.vpp1.toFixed(3), "f", scopePart.freq1.toFixed(2), "rms", scopePart.vrms1.toFixed(3), "shown", scopePart.samples.t.length)
+assert.ok(Math.abs(scopePart.vpp1 - 10) < 0.6, "vpp1 " + scopePart.vpp1)
+assert.ok(Math.abs(scopePart.vpp2 - scopePart.vpp1) < 1e-6, "ch2 is recorded even when the prop is off")
+assert.ok(Math.abs(scopePart.freq1 - 60) < 1, "freq1 " + scopePart.freq1)
+assert.ok(Math.abs(scopePart.vrms1 - scopePart.vpp1 / (2 * Math.SQRT2)) < 0.05, "vrms1 " + scopePart.vrms1)
+assert.strictEqual(scopeState.scope.s.t.length, scopeSteps + 1, "one sample per solve, not per Newton step")
+assert.ok(scopePart.samples.t.length > 50 && scopePart.samples.t.length <= 600)
+assert.strictEqual(scopePart.samples.ch1.length, scopePart.samples.t.length)
+assert.strictEqual(scopePart.samples.ch2.length, scopePart.samples.t.length)
+var scopeStored = scopeState.scope.s
+var scopeEnd = scopeStored.t[scopeStored.t.length - 1]
+var scopeStart = 0
+while (scopeStored.t[scopeStart] < scopeEnd - 0.05 - 1e-12) scopeStart++
+assert.strictEqual(scopePart.samples.t[0], scopeStored.t[scopeStart])
+assert.strictEqual(scopePart.samples.t[scopePart.samples.t.length - 1], scopeEnd)
+
+var decNet = net([
+  { id: "ac", type: "acSource", nodes: [1, 0], props: { wave: "sine", freq: 60, amplitude: 5 } },
+  { id: "r", type: "resistor", nodes: [1, 0], props: { ohms: 1000 } },
+  { id: "s", type: "oscilloscope", nodes: [1, 0, 0], props: { timePerDiv: 0.005 } }
+], 2)
+var decState = E.createState()
+var decLast = null
+for (var decI = 0; decI < 1200; decI++) decLast = E.solve(decNet, decState, 5e-5)
+var decPart = part(decLast, "s")
+assert.strictEqual(decPart.samples.t.length, 600, "decimate to 600 " + decPart.samples.t.length)
+var decStored = decState.scope.s
+var decEnd = decStored.t[decStored.t.length - 1]
+var decFrom = 0
+while (decStored.t[decFrom] < decEnd - 0.05 - 1e-12) decFrom++
+assert.strictEqual(decPart.samples.t[0], decStored.t[decFrom])
+assert.strictEqual(decPart.samples.t[599], decEnd)
+
+var ringState = E.createState()
+var ringNet = net([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "s", type: "oscilloscope", nodes: [1, 0, 0], props: {} }
+], 2)
+var ringLast = null
+for (var ringI = 0; ringI < 2005; ringI++) ringLast = E.solve(ringNet, ringState, 0.001)
+assert.strictEqual(ringState.scope.s.t.length, 2000)
+assert.ok(Math.abs(ringState.scope.s.t[0] - 0.006) < 1e-9, "oldest kept " + ringState.scope.s.t[0])
+assert.ok(part(ringLast, "s").vpp1 < 0.05, "DC vpp " + part(ringLast, "s").vpp1)
+assert.strictEqual(part(ringLast, "s").freq1, 0)
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.

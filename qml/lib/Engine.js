@@ -44,7 +44,8 @@ function createState() {
     nodeVolts: null,
     nodeCount: -1,
     mcu: {},
-    servoAngle: {}
+    servoAngle: {},
+    scope: {}
   }
 }
 
@@ -53,7 +54,7 @@ function isTimeDependent(netlist) {
   if (!els) return false
   for (var i = 0; i < els.length; i++) {
     var t = els[i].type
-    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter") return true
+    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter" || t === "oscilloscope") return true
   }
   return false
 }
@@ -141,6 +142,7 @@ function solve(netlist, state, dt) {
 
 function ensureState(state) {
   if (typeof state.t !== "number" || !isFinite(state.t)) state.t = 0
+  if (!state.scope) state.scope = {}
   if (!state.capV) state.capV = {}
   if (!state.burnt) state.burnt = {}
   if (!state.burnWhy) state.burnWhy = {}
@@ -989,6 +991,12 @@ function build(nl, state, v, dt, ref, work) {
       var mode = str(el, "mode", "V")
       if (mode === "A") stampG(sys, nmet[0], nmet[1], 1 / METER_R)
       else if (mode === "Ω" && !powered) stampI(sys, nmet[0], nmet[1], OHM_I)
+    } else if (el.type === "oscilloscope") {
+      var nsc = pins(el, nl.nodeCount, 3)
+      if (!nsc) continue
+      // 10 MΩ from each channel to the ground clip.
+      stampG(sys, nsc[0], nsc[2], 1e-7)
+      stampG(sys, nsc[1], nsc[2], 1e-7)
     }
   }
 
@@ -1036,6 +1044,8 @@ function assemble(nl, state, v, dt, converged, work) {
       fillSource(p, el, id, pv, warnings)
     } else if (kind === "acSource" || kind === "acAdapter") {
       fillAc(p, el, pv, work)
+    } else if (kind === "oscilloscope") {
+      fillScope(p, el, id, pv, state, work)
     } else if (kind === "resistor" || kind === "ldr" || kind === "thermistor" || kind === "pushButton" || kind === "buzzer" || kind === "motor") {
       fillR(p, el, id, pv, state, nl, warnings)
     } else if (kind === "slideSwitch") {
@@ -1090,6 +1100,118 @@ function pinVoltsOf(el, v, nodeCount) {
     else pv.push(nodeV(v, n | 0))
   }
   return pv
+}
+
+function scopeRing(state, id) {
+  var ring = state.scope[id]
+  if (!ring || !ring.t) {
+    ring = { t: [], ch1: [], ch2: [] }
+    state.scope[id] = ring
+  }
+  return ring
+}
+
+function scopePush(ring, t, c1, c2) {
+  ring.t.push(t)
+  ring.ch1.push(c1)
+  ring.ch2.push(c2)
+  var extra = ring.t.length - 2000
+  if (extra > 0) {
+    ring.t.splice(0, extra)
+    ring.ch1.splice(0, extra)
+    ring.ch2.splice(0, extra)
+  }
+}
+
+function scopeSpan(el) {
+  var div = num(el, "timePerDiv", 0.005)
+  if (!(div > 0)) div = 0.005
+  return div * 10
+}
+
+function scopeWindow(ring, span) {
+  var n = ring.t.length
+  var start = 0
+  if (n > 0) {
+    var oldest = ring.t[n - 1] - span
+    while (start < n && ring.t[start] < oldest - 1e-12) start++
+  }
+  return { t: ring.t.slice(start), ch1: ring.ch1.slice(start), ch2: ring.ch2.slice(start) }
+}
+
+function scopeDecimate(series, maxN) {
+  var n = series.t.length
+  if (n <= maxN) return { t: series.t.slice(), ch1: series.ch1.slice(), ch2: series.ch2.slice() }
+  var t = []
+  var c1 = []
+  var c2 = []
+  var last = n - 1
+  for (var i = 0; i < maxN; i++) {
+    var idx = Math.round(i * last / (maxN - 1))
+    t.push(series.t[idx])
+    c1.push(series.ch1[idx])
+    c2.push(series.ch2[idx])
+  }
+  return { t: t, ch1: c1, ch2: c2 }
+}
+
+function scopeVpp(xs) {
+  if (!xs.length) return 0
+  var lo = xs[0]
+  var hi = xs[0]
+  for (var i = 1; i < xs.length; i++) {
+    if (xs[i] < lo) lo = xs[i]
+    if (xs[i] > hi) hi = xs[i]
+  }
+  return hi - lo
+}
+
+function scopeRms(xs) {
+  if (!xs.length) return 0
+  var s = 0
+  for (var i = 0; i < xs.length; i++) s += xs[i] * xs[i]
+  return Math.sqrt(s / xs.length)
+}
+
+// Rising zero crossings, interpolated. One less than the count, over the time
+// from the first rise to the last, is the frequency. Fewer than two rises → 0.
+function scopeFreq(ts, xs) {
+  if (xs.length < 2) return 0
+  var rises = []
+  for (var i = 1; i < xs.length; i++) {
+    var a = xs[i - 1]
+    var b = xs[i]
+    if (!(a < 0 && b >= 0)) continue
+    var den = b - a
+    var frac = den !== 0 ? -a / den : 0
+    if (frac < 0) frac = 0
+    if (frac > 1) frac = 1
+    rises.push(ts[i - 1] + (ts[i] - ts[i - 1]) * frac)
+  }
+  if (rises.length < 2) return 0
+  var dur = rises[rises.length - 1] - rises[0]
+  if (!(dur > 0)) return 0
+  return (rises.length - 1) / dur
+}
+
+function fillScope(p, el, id, pv, state, work) {
+  var gnd = pv[2] || 0
+  var ch1 = (pv[0] || 0) - gnd
+  var ch2 = (pv[1] || 0) - gnd
+  var t = work && isFinite(work.t) ? work.t : 0
+  var ring = scopeRing(state, id)
+  scopePush(ring, t, ch1, ch2)
+  var win = scopeWindow(ring, scopeSpan(el))
+  p.samples = scopeDecimate(win, 600)
+  p.vpp1 = scopeVpp(win.ch1)
+  p.vpp2 = scopeVpp(win.ch2)
+  p.vrms1 = scopeRms(win.ch1)
+  p.freq1 = scopeFreq(win.t, win.ch1)
+  var i1 = ch1 / 1e7
+  var i2 = ch2 / 1e7
+  p.current = i1
+  p.power = Math.abs(i1 * ch1) + Math.abs(i2 * ch2)
+  p.pinCurrents = [i1, i2, -(i1 + i2)]
 }
 
 function fillAc(p, el, pv, work) {
