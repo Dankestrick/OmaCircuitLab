@@ -70,10 +70,20 @@ Done, in the handoff order. Not pushed. QML was not edited. The shell was not re
 
 `node tests/engine.test.js`, `lessons.test.js`, `bench.test.js`, `mcu.test.js`, and `clamp.test.js` pass. A headless `qml6` WorkerScript loaded the worker with `Mcu.mjs` in it and solved the 470 Ω LED at 15.3 mA, brightness 0.76. Same one-time `QObject::connect` warning as before. That was not the Omarchy shell.
 
+## Buzzer and leg currents (2026-10-22)
+
+Done. Not pushed. QML was not edited. The shell was not restarted. Claude's Overlay, PartView, PartArt, and SoundPlayer edits were left unstaged.
+
+1. Backwards buzzer (`a5a7505`). When V(−) − V(+) is over 2.5 V, `reversed` is true, `on` stays false, and the warn is "This buzzer is in backwards: its + leg (marked +) needs the higher voltage. Turn it around (R)." A 9 V battery backwards still pushes about 45 mA.
+2. Pitch (`02e50a3`). Every buzzer result has `freq`. A tone on the + pin uses that hertz, including `tone()` at pwm 127, which averages under 2.5 V so `on` stays false. Otherwise an on buzzer is 2300 Hz and an off one is 0. A tone on the minus pin does not count.
+3. `pinCurrents` (`03f1a7c`). Amps into each pin, summing to about 0, on the pot, slide switch, NPN, PNP, NMOS, TMP36, RGB LED, 7-segment, OmaDuino, servo, HC-SR04, motor driver, and robot car. The OmaDuino closes the sum on the first GND pin. A pull-up's current leaves the GPIO pin, not the 5V pin. `node tests/engine.test.js` and `node tests/clamp.test.js` pass.
+4. Sound files (`e7df517`). `scripts/make-tones.py` writes `qml/sounds/tone-<hz>.wav` and `qml/sounds/tones.json`. 50 files, 16-bit mono, 22050 Hz, about 0.25 s, quiet. C3 (131) through C7 (2093) plus 2300. Each buffer is a whole number of cycles. The folder is 554 KB.
+
+The player in Overlay currently sounds a buzzer only when `on` is true. `tone()` sets `freq` and leaves `on` false, so a sketch tone will stay silent until the player also accepts `freq > 0`.
+
 ## Left
 
-- Claude: lessons 18–24 in the app (they moved; they were 17–23) and the robot arena. Scroll the sonar and the car. I did not restart the shell.
-- `pinCurrents` is still missing on the pot, slide switch, BJT, MOSFET, TMP36, RGB LED, 7-segment, and OmaDuino. The clamp then says the leg currents are not reported. HC-SR04, servo, motor driver, and robot car do report them.
+- Claude: the buzzer drawing, the BZZZ tag, the speaker toggle, and the player. Play when `freq > 0`. Lessons 18–24 and the robot arena are still untested in the app. I did not restart the shell.
 - Motor current does not come out of the driver's VM pin. Each output is a source to driver GND, so the battery on VM does not sag. The output voltages and `motorA` / `motorB` are the ones the tests check.
 - Pin writes, servo angle, and PWM show up one step after the sketch sets them. The echo pin stays at 0 V. The travel time is only what `pulseIn` returns.
 - The 25 ms worker cap is unchanged. 1000 blink steps are 56 ms in Node, so a 33-step frame should fit. If the shell blinks in slow motion, the warm step is the thing to cheapen.
