@@ -2,7 +2,7 @@
 
 A breadboard circuit simulator for learning electronics on Omarchy. Drop parts onto a full-size breadboard, wire them with neat square jumpers, press **Run**, and watch LEDs light, meters read and motors spin. Hover anything for a plain-language explanation, and follow the **Learner's Guide** from a first LED to driving a motor.
 
-![The wall-dodging robot lesson: an OmaDuino, a motor driver, a sonar and a robot car](preview.png)
+![OmaCircuitLab running the wall-dodging robot lesson on the Crimson Veil theme](preview.png)
 
 ## Parts
 
