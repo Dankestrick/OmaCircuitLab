@@ -893,6 +893,125 @@ assert.strictEqual(propSerial[propSerial.length - 1], "12 cm")
 var idle = loadWorker()
 assert.strictEqual(idle.send({ cmd: "setProp", id: "us", key: "distance", value: 3 }).length, 0)
 
+// --- pin currents into every leg of a 3+ pin part sum to about 0 ---
+function sumPins(live) {
+  assert.ok(live.pinCurrents && live.pinCurrents.length >= 3, "missing pinCurrents " + JSON.stringify(live.pinCurrents))
+  var s = 0
+  for (var i = 0; i < live.pinCurrents.length; i++) s += live.pinCurrents[i]
+  return s
+}
+function assertKcl(live, what) {
+  var s = sumPins(live)
+  assert.ok(Math.abs(s) < 1e-8, what + " kcl " + s)
+}
+
+var potK = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "k", type: "potentiometer", nodes: [1, 2, 0], props: { ohms: 10000, turn: 0.5 } },
+  { id: "r", type: "resistor", nodes: [2, 0], props: { ohms: 10000 } }
+], 3)
+assertKcl(part(potK, "k"), "pot")
+assert.strictEqual(part(potK, "k").pinCurrents[0], part(potK, "k").current)
+assert.ok(part(potK, "k").pinCurrents[0] > 0.0005, "current enters the high end")
+
+var swA = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "sw", type: "slideSwitch", nodes: [2, 1, 3], props: { position: 0 } },
+  { id: "r", type: "resistor", nodes: [2, 0], props: { ohms: 100 } }
+], 4)
+assertKcl(part(swA, "sw"), "switch A")
+assert.strictEqual(part(swA, "sw").pinCurrents[0], part(swA, "sw").current)
+assert.ok(part(swA, "sw").pinCurrents[0] < -0.05, "current leaves A")
+assert.strictEqual(part(swA, "sw").pinCurrents[2], 0)
+var swB = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "sw", type: "slideSwitch", nodes: [3, 1, 2], props: { position: 1 } },
+  { id: "r", type: "resistor", nodes: [2, 0], props: { ohms: 100 } }
+], 4)
+assertKcl(part(swB, "sw"), "switch B")
+assert.strictEqual(part(swB, "sw").pinCurrents[0], 0)
+assert.ok(part(swB, "sw").pinCurrents[2] < -0.05, "current leaves B")
+
+assertKcl(part(npnOn, "q"), "npn")
+assert.strictEqual(part(npnOn, "q").pinCurrents[0], part(npnOn, "q").current)
+assert.strictEqual(part(npnOn, "q").pinCurrents[2], part(npnOn, "q").collectorCurrent)
+assert.ok(part(npnOn, "q").pinCurrents[0] < 0, "emitter current leaves")
+assertKcl(part(pnp, "q"), "pnp")
+assert.strictEqual(part(pnp, "q").pinCurrents[0], part(pnp, "q").current)
+assert.strictEqual(part(pnp, "q").pinCurrents[2], part(pnp, "q").collectorCurrent)
+assertKcl(part(mosOn, "q"), "nmos")
+assert.strictEqual(part(mosOn, "q").pinCurrents[0], part(mosOn, "q").current)
+assert.strictEqual(part(mosOn, "q").pinCurrents[1], 0)
+assert.strictEqual(part(mosOn, "q").pinCurrents[2], part(mosOn, "q").collectorCurrent)
+
+assertKcl(part(tmp, "t"), "tmp36")
+assert.strictEqual(part(tmp, "t").pinCurrents[0], part(tmp, "t").current)
+assert.ok(Math.abs(part(tmp, "t").pinCurrents[0] - 50e-6) < 1e-9, "bias")
+assert.ok(Math.abs(part(tmp, "t").pinCurrents[1]) < 1e-6, "open output")
+var tmpLoad = solve([
+  { id: "ps", type: "benchSupply", nodes: [1, 0], props: { volts: 5, currentLimit: 0.1 } },
+  { id: "t", type: "tmp36", nodes: [1, 2, 0], props: { celsius: 25 } },
+  { id: "r", type: "resistor", nodes: [2, 0], props: { ohms: 1000 } }
+], 3)
+assertKcl(part(tmpLoad, "t"), "tmp36 loaded")
+assert.ok(part(tmpLoad, "t").pinCurrents[1] < -0.0004, "output sources into the load")
+
+var rgbK = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "rr", type: "resistor", nodes: [1, 2], props: { ohms: 470 } },
+  { id: "rg", type: "resistor", nodes: [1, 3], props: { ohms: 470 } },
+  { id: "led", type: "rgbLed", nodes: [2, 0, 3, 4], props: {} }
+], 5)
+assertKcl(part(rgbK, "led"), "rgb")
+assert.strictEqual(part(rgbK, "led").pinCurrents.length, 4)
+assert.strictEqual(part(rgbK, "led").pinCurrents[0], part(rgbK, "led").current)
+assert.ok(part(rgbK, "led").pinCurrents[0] > 0.01 && part(rgbK, "led").pinCurrents[2] > 0.01)
+assert.ok(Math.abs(part(rgbK, "led").pinCurrents[3]) < 0.001, "blue is open")
+
+assertKcl(part(segLit, "disp"), "seven")
+assert.strictEqual(part(segLit, "disp").pinCurrents.length, 9)
+assert.strictEqual(part(segLit, "disp").pinCurrents[0], part(segLit, "disp").current)
+assert.ok(part(segLit, "disp").pinCurrents[8] < -0.01, "common cathode returns the segments")
+
+assertKcl(rails.parts.mcu, "board rails")
+assert.strictEqual(rails.parts.mcu.pinCurrents.length, 22)
+assert.ok(rails.parts.mcu.pinCurrents[1] < -0.04, "5V sources " + rails.parts.mcu.pinCurrents[1])
+assert.ok(rails.parts.mcu.pinCurrents[2] < -0.02, "3.3V sources " + rails.parts.mcu.pinCurrents[2])
+assert.ok(rails.parts.mcu.pinCurrents[0] > 0.06, "GND returns the rails")
+
+var gpioState = E.createState()
+var gpioNet = net([
+  duinoElement(STUB, { 20: 3 }),
+  { id: "r", type: "resistor", nodes: [3, 0], props: { ohms: 470 } }
+], 50)
+E.solve(gpioNet, gpioState, 0)
+gpioState.mcu.mcu.vm.pins[13].mode = "out"
+gpioState.mcu.mcu.vm.pins[13].level = 1
+var gpio = E.solve(gpioNet, gpioState, 0)
+assertKcl(gpio.parts.mcu, "gpio")
+assert.ok(gpio.parts.mcu.pinCurrents[20] < -0.008, "D13 sources " + gpio.parts.mcu.pinCurrents[20])
+
+var pullState = E.createState()
+var pullNet = net([duinoElement(STUB, { 9: 0 })], 50)
+E.solve(pullNet, pullState, 0)
+pullState.mcu.mcu.vm.pins[2].mode = "pullup"
+var pullGnd = E.solve(pullNet, pullState, 0)
+assertKcl(pullGnd.parts.mcu, "pullup")
+assert.ok(pullGnd.parts.mcu.pinCurrents[9] < -100e-6 && pullGnd.parts.mcu.pinCurrents[9] > -200e-6, "D2 pull-up into GND")
+assert.ok(Math.abs(pullGnd.parts.mcu.pinCurrents[1]) < 50e-6, "pull-up does not leave the 5V pin")
+
+assertKcl(driven.parts.drv, "driver")
+assert.strictEqual(driven.parts.drv.pinCurrents.length, 10)
+assertKcl(ahead.parts.car, "car")
+assert.strictEqual(ahead.parts.car.pinCurrents.length, 8)
+
+var deadPot = E.solve({
+  nodeCount: 3, ground: -1,
+  elements: [{ id: "k", type: "potentiometer", nodes: [0, 1, 2], props: { ohms: 10000, turn: 0.5 } }]
+}, E.createState(), 0)
+assert.strictEqual(deadPot.parts.k.pinCurrents.length, 3)
+assert.ok(deadPot.parts.k.pinCurrents.every(function (x) { return x === 0 }), "unpowered pot legs are 0")
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.

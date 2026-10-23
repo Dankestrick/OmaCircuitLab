@@ -215,6 +215,11 @@ export function unpowered(nl, state) {
     var n = el.nodes ? el.nodes.length : 0
     for (var k = 0; k < n; k++) pv.push(0)
     var p = { current: 0, power: 0, pinVolts: pv }
+    if (n >= 3) {
+      var legs = []
+      for (var c = 0; c < n; c++) legs.push(0)
+      p.pinCurrents = legs
+    }
     if (el.type === "multimeter") {
       var mode = str(el, "mode", "V")
       p.value = 0
@@ -1112,6 +1117,10 @@ export function fillSwitch(p, el, pv) {
   // Pin 0 is A. Current into A is nonzero only when the slider is on A.
   p.current = pos === 0 ? i : 0
   p.power = Math.abs(i * (vA - vCommon))
+  var legs = [0, 0, 0]
+  legs[a] = i
+  legs[1] = -i
+  p.pinCurrents = legs
 }
 
 export function fillPot(p, el, pv) {
@@ -1123,6 +1132,7 @@ export function fillPot(p, el, pv) {
   var i2 = (v1 - v2) / pot.r2
   p.current = i1
   p.power = Math.abs(i1 * (v0 - v1)) + Math.abs(i2 * (v1 - v2))
+  p.pinCurrents = [i1, i2 - i1, -i2]
 }
 
 export function fillLed(p, el, id, pv, state, warnings) {
@@ -1163,10 +1173,12 @@ export function fillSeven(p, el, id, pv, state, warnings) {
   var power = 0
   var i0 = 0
   var anyBurn = false
+  var iSeg = []
   for (var i = 0; i < 8; i++) {
     var sid = id + ":" + names[i]
     if (state.burnt[sid]) {
       anyBurn = true
+      iSeg.push(0)
       continue
     }
     var vd = (pv[i] || 0) - common
@@ -1175,6 +1187,7 @@ export function fillSeven(p, el, id, pv, state, warnings) {
       state.burnt[sid] = true
       state.burnWhy[sid] = "led"
       anyBurn = true
+      iSeg.push(0)
       pushWarn(warnings, id, "warn", "Segment " + names[i] + " burned out from too much current. Add a resistor, then press Reset.")
     } else {
       var b = s.id / LED_INOM
@@ -1182,14 +1195,19 @@ export function fillSeven(p, el, id, pv, state, warnings) {
       if (b > 1) b = 1
       segs[names[i]] = b
       power += Math.abs(s.id * vd)
+      iSeg.push(s.id)
       if (i === 0) i0 = s.id
       if (vd < -2 && s.id < 0.001) pushWarn(warnings, id, "warn", "Segment " + names[i] + " is in backwards, so it stays dark.")
     }
   }
+  var iCommon = 0
+  for (var j = 0; j < iSeg.length; j++) iCommon -= iSeg[j]
+  iSeg.push(iCommon)
   p.current = i0
   p.power = power
   p.segments = segs
   p.burnt = anyBurn
+  p.pinCurrents = iSeg
 }
 
 export function fillRgb(p, el, id, pv, state, warnings) {
@@ -1200,6 +1218,7 @@ export function fillRgb(p, el, id, pv, state, warnings) {
   var power = 0
   var burnt = state.burnt[id] === true
   var over = false
+  var iAn = [0, 0, 0]
   if (!burnt) {
     for (var c = 0; c < 3; c++) {
       var lp = ledParams(names[c])
@@ -1210,6 +1229,7 @@ export function fillRgb(p, el, id, pv, state, warnings) {
       if (b > 1) b = 1
       bright[names[c] === "red" ? "r" : names[c] === "green" ? "g" : "b"] = b
       power += Math.abs(s.id * vd)
+      iAn[c] = s.id
       if (c === 0) current0 = s.id
       if (s.id > LED_IMAX) over = true
     }
@@ -1218,11 +1238,14 @@ export function fillRgb(p, el, id, pv, state, warnings) {
     state.burnt[id] = true
     state.burnWhy[id] = "led"
     burnt = true
+    iAn = [0, 0, 0]
+    current0 = 0
   }
   p.current = burnt ? 0 : current0
   p.power = burnt ? 0 : power
   p.brightness = burnt ? { r: 0, g: 0, b: 0 } : bright
   p.burnt = burnt
+  p.pinCurrents = [iAn[0], -(iAn[0] + iAn[1] + iAn[2]), iAn[1], iAn[2]]
   if (burnt) pushWarn(warnings, id, "warn", "This LED burned out from too much current. Add a resistor on each color, then press Reset.")
 }
 
@@ -1270,6 +1293,7 @@ export function fillBjt(p, el, pv) {
     p.state = bjtState(veb, vce, -ev.ic)
   }
   p.power = Math.abs(ve * ev.ie + vb * ev.ib + vc * ev.ic)
+  p.pinCurrents = [ev.ie, ev.ib, ev.ic]
 }
 
 export function bjtState(vbe, vce, icForward) {
@@ -1290,6 +1314,7 @@ export function fillMos(p, pv) {
   var idDrain = m.id - bd.id
   p.current = -idDrain
   p.collectorCurrent = idDrain
+  p.pinCurrents = [-idDrain, 0, idDrain]
   p.power = Math.abs(idDrain * (vd - vs))
   if (vgs < MOS_VTH && Math.abs(idDrain) < 1e-4) p.state = "off"
   else if (vgs >= MOS_VTH && vds < (vgs - MOS_VTH) && Math.abs(idDrain) > 1e-5) p.state = "saturated"
@@ -1379,10 +1404,20 @@ export function fillMeter(p, el, id, pv, nl, warnings) {
 }
 
 export function fillTmp(p, el, id, pv, work, warnings) {
-  var vsup = (pv[0] || 0) - (pv[2] || 0)
+  var vPlus = pv[0] || 0
+  var vOut = pv[1] || 0
+  var vGnd = pv[2] || 0
+  var vsup = vPlus - vGnd
   var on = vsup > 2.6
-  p.current = on || vsup > 0.2 ? 50e-6 : 0
-  p.power = Math.abs(p.current * vsup)
+  var bias = on || vsup > 0.2 ? 50e-6 : 0
+  var iOut = 0
+  if (work && work.tmpOn && work.tmpOn[id]) {
+    var vset = 0.5 + 0.01 * num(el, "celsius", 25)
+    iOut = (vOut - vGnd - vset) / 100
+  }
+  p.current = bias
+  p.power = Math.abs(bias * vsup)
+  p.pinCurrents = [bias, iOut, -(bias + iOut)]
   if (!on) pushWarn(warnings, id, "info", "This temperature probe needs at least 2.7 V from +V to GND before its output means anything.")
 }
 
@@ -1598,6 +1633,59 @@ export function fillBoard(p, el, id, pv, state, v, warnings) {
   p.running = !!(slot && slot.vm && !p.error)
   p.current = i5 + i33 + iGpio
   p.power = 0
+  p.pinCurrents = boardPinCurrents(el, map, srcPins, v, gndV, i5, i33)
+}
+
+export function boardPinCurrents(el, map, srcPins, v, gndV, i5, i33) {
+  var nodes = el && el.nodes ? el.nodes : []
+  var into = []
+  var gndHeader = []
+  var v5Header = -1
+  var headerOf = []
+  for (var s = 0; s < 20; s++) headerOf.push(-1)
+  for (var h = 0; h < nodes.length; h++) {
+    into.push(0)
+    var name = (typeof Catalog !== "undefined" && Catalog.mcuPinNumber) ? Catalog.mcuPinNumber(h) : null
+    if (name === "gnd") gndHeader.push(h)
+    else if (name === "5v") v5Header = h
+    else if (typeof name === "number" && name >= 0 && name < 20) headerOf[name] = h
+  }
+  if (map.gnd < 0) return into
+  if (v5Header >= 0 && map.v5 >= 0) into[v5Header] = -i5
+  for (var h3 = 0; h3 < nodes.length; h3++) {
+    var name3 = (typeof Catalog !== "undefined" && Catalog.mcuPinNumber) ? Catalog.mcuPinNumber(h3) : null
+    if (name3 === "3v3" && map.v33 >= 0) into[h3] = -i33
+  }
+  for (var p = 0; p < 20; p++) {
+    var header = headerOf[p]
+    if (header < 0 || map.pins[p] < 0) continue
+    var src = srcPins && srcPins[p] ? srcPins[p] : null
+    var mode = src && src.mode ? src.mode : "in"
+    var vpin = nodeV(v, map.pins[p])
+    if (mode === "out") {
+      into[header] = -((gpioVolts(src) - (vpin - gndV)) / 25)
+    } else if (mode === "pullup" && map.v5 >= 0) {
+      var iPull = (vpin - nodeV(v, map.v5)) / 35000
+      into[header] = iPull
+      if (v5Header >= 0) into[v5Header] -= iPull
+    } else {
+      into[header] = (vpin - gndV) / 1e7
+    }
+  }
+  if (gndHeader.length) {
+    var first = gndHeader[0]
+    var vFirst = nodeV(v, nodes[first] | 0)
+    for (var g = 1; g < gndHeader.length; g++) {
+      var hx = gndHeader[g]
+      var node = nodes[hx]
+      if (typeof node !== "number" || !isFinite(node)) continue
+      into[hx] += (nodeV(v, node | 0) - vFirst) / 0.05
+    }
+    var others = 0
+    for (var u = 0; u < into.length; u++) if (u !== first) others += into[u]
+    into[first] = -others
+  }
+  return into
 }
 
 export function runBoards(nl, state, result, v, dt) {
@@ -1650,6 +1738,7 @@ export function fillCar(p, el, id, v, warnings) {
   p.leftSpin = 0
   p.rightSpin = 0
   p.pinging = false
+  p.pinCurrents = [0, 0, 0, 0, 0, 0, 0, 0]
   if (!n) return
   var iL = (nodeV(v, n[0]) - nodeV(v, n[1])) / 10
   var iR = (nodeV(v, n[2]) - nodeV(v, n[3])) / 10
@@ -1677,6 +1766,7 @@ export function fillCar(p, el, id, v, warnings) {
 
 export function fillSonar(p, el, id, v, warnings) {
   p.pinging = false
+  p.pinCurrents = [0, 0, 0, 0]
   var ns = sonarNodes(el, v.length)
   if (!ns) return
   var vg = nodeV(v, ns.gnd)
@@ -1803,6 +1893,7 @@ export function fillDriver(p, el, id, v, state, nl, warnings) {
   var n = pins(el, v.length, 10)
   p.motorA = 0
   p.motorB = 0
+  p.pinCurrents = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
   if (!n) return
   var vg = nodeV(v, n[1])
   var vm = nodeV(v, n[0]) - vg
