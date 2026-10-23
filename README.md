@@ -66,7 +66,7 @@ omarchy-shell shell toggle io.github.dankestrick.omacircuitlab
 
 The first time it opens, OmaCircuitLab adds its own entry to the app menu, so after that you can open it from the launcher. It only creates that file when it is missing and never overwrites one.
 
-OmaCircuitLab uses no network and never asks for root. The only optional dependency is `qt6-multimedia`,. Install that package to hear the buzzer. Without it, everything else works and the buzzer stays silent.
+OmaCircuitLab uses no network and never asks for root. The only optional dependency is the `qt6-multimedia` package, which plays the buzzer's sound. Without it, everything else works and the buzzer stays silent.
 
 ## Files it writes
 
