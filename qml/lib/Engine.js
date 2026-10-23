@@ -32,6 +32,7 @@ var PHOTO_I = 50e-6
 var FUSE_MSG = "The fuse blew: too much current. Fix the short, then press Reset."
 var REG_LOW = "This 7805 needs at least 7 V in to make 5 V."
 var REG_HOT = "This 7805 is passing more than 1 A. It will get hot."
+var TINY_VOLT = "This OmaTiny needs between 2.7 V and 5.5 V on VCC. Above 6 V it stays off."
 var OP_GAIN = 1e5
 var OP_ROUT = 50
 var BJT_IS = 1e-14
@@ -70,7 +71,7 @@ function isTimeDependent(netlist) {
   if (!els) return false
   for (var i = 0; i < els.length; i++) {
     var t = els[i].type
-    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter" || t === "oscilloscope" || t === "inductor" || t === "transformer" || t === "relay" || t === "timer555") return true
+    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "omaNano" || t === "omaTiny" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter" || t === "oscilloscope" || t === "inductor" || t === "transformer" || t === "relay" || t === "timer555") return true
   }
   return false
 }
@@ -189,10 +190,31 @@ function normalize(netlist) {
   return { nodeCount: nodeCount, ground: ground, elements: elements }
 }
 
+function isBoard(type) {
+  return type === "omaduino" || type === "omaNano" || type === "omaTiny"
+}
+
+function isSupplyBoard(type) {
+  return type === "omaduino" || type === "omaNano"
+}
+
+function supplyBoardGround(el, nodeCount) {
+  var idx = 0
+  if (typeof Catalog !== "undefined" && Catalog.groundPin) {
+    var g = Catalog.groundPin(el.type)
+    if (typeof g === "number" && g >= 0) idx = g
+  }
+  var nodes = el && el.nodes
+  if (!nodes || idx >= nodes.length) return -1
+  var n = nodes[idx]
+  if (typeof n !== "number" || (n | 0) < 0 || (n | 0) >= nodeCount) return -1
+  return n | 0
+}
+
 function isPowered(nl) {
   for (var i = 0; i < nl.elements.length; i++) {
     var t = nl.elements[i].type
-    if (t === "battery9v" || t === "aaPack" || t === "benchSupply" || t === "omaduino" || t === "acSource" || t === "acAdapter") return true
+    if (t === "battery9v" || t === "aaPack" || t === "benchSupply" || isSupplyBoard(t) || t === "acSource" || t === "acAdapter") return true
   }
   return false
 }
@@ -208,7 +230,7 @@ function hasOhmProbe(nl) {
 function hasDcSupply(nl) {
   for (var i = 0; i < nl.elements.length; i++) {
     var t = nl.elements[i].type
-    if (t === "battery9v" || t === "aaPack" || t === "benchSupply" || t === "omaduino") return true
+    if (t === "battery9v" || t === "aaPack" || t === "benchSupply" || isSupplyBoard(t)) return true
   }
   return false
 }
@@ -220,10 +242,10 @@ function chooseRef(nl) {
     for (var i = 0; i < nl.elements.length; i++) {
       var el = nl.elements[i]
       var t = el.type
-      if (t !== "battery9v" && t !== "aaPack" && t !== "benchSupply" && t !== "omaduino") continue
-      if (t === "omaduino") {
-        var nb = pins(el, nl.nodeCount, 1)
-        if (nb) return nb[0]
+      if (t !== "battery9v" && t !== "aaPack" && t !== "benchSupply" && !isSupplyBoard(t)) continue
+      if (isSupplyBoard(t)) {
+        var gb = supplyBoardGround(el, nl.nodeCount)
+        if (gb >= 0) return gb
         continue
       }
       var n = pins(el, nl.nodeCount, 2)
@@ -852,8 +874,8 @@ function sourceList(nl, v, state, work) {
       } else {
         list.push({ kind: "tmpOff", vp: n[0], vg: n[2], out: n[1], id: id })
       }
-    } else if (kind === "omaduino") {
-      var plan = boardPlan(el, state, id)
+    } else if (isBoard(kind)) {
+      var plan = boardPlan(el, state, id, v)
       nExtra += plan.outputs.length
       list.push(plan)
     } else if (kind === "motorDriver") {
@@ -1080,7 +1102,7 @@ function build(nl, state, v, dt, ref, work) {
       continue
     }
     if (src && src.kind === "board") {
-      stampBoard(sys, src)
+      stampBoard(sys, src, v)
       sources.push(src)
       continue
     }
@@ -1412,7 +1434,7 @@ function assemble(nl, state, v, dt, converged, work) {
       fillMeter(p, el, id, pv, nl, warnings)
     } else if (kind === "tmp36") {
       fillTmp(p, el, id, pv, work, warnings)
-    } else if (kind === "omaduino") {
+    } else if (isBoard(kind)) {
       fillBoard(p, el, id, pv, state, v, warnings)
     } else if (kind === "hcsr04") {
       fillSonar(p, el, id, v, warnings)
@@ -1643,12 +1665,12 @@ function buzzerTone(state, nl, plusNode) {
   if (!nl || plusNode < 0) return 0
   for (var i = 0; i < nl.elements.length; i++) {
     var board = nl.elements[i]
-    if (board.type !== "omaduino") continue
+    if (!isBoard(board.type)) continue
     var map = boardMap(board)
     var slot = state.mcu && state.mcu[partId(board, i)]
     var srcPins = slot && slot.vm ? slot.vm.pins : null
     if (!srcPins) continue
-    for (var s = 0; s < 20; s++) {
+    for (var s = 0; s < map.pins.length; s++) {
       if (map.pins[s] !== plusNode) continue
       var src = srcPins[s]
       if (!src || src.tone === null || src.tone === undefined) continue
@@ -2294,88 +2316,139 @@ function trimNum(s) {
 }
 
 // ---------------------------------------------------------------------------
-// OmaDuino. The VM is cached on state and only rebuilt when the sketch text
-// changes. Each dt > 0 solve stamps the current pins, then runs the sketch
-// forward by dt. The new pin levels are what the next solve stamps.
+// Boards. Each element id keeps its own VM, rebuilt only when the sketch
+// text or the board type changes. Each dt > 0 solve stamps the current pins,
+// then runs that sketch forward by dt. The new pin levels are what the next
+// solve stamps. omaNano uses the OmaDuino rails. omaTiny has no regulator:
+// it runs only while VCC − GND is between 2.7 V and 5.5 V, and a HIGH output
+// drives to VCC through 25 Ω.
+
+function boardProfile(type) {
+  var fallback = type === "omaTiny"
+    ? { pins: 5, pwm: { 0: true, 1: true, 4: true }, analog: { 1: 2, 2: 4, 3: 3 }, serial: false }
+    : { pins: 20, pwm: { 3: true, 5: true, 6: true, 9: true, 10: true, 11: true }, analog: null, serial: true }
+  if (typeof Catalog === "undefined" || !Catalog.mcuProfile) return fallback
+  try {
+    var profile = Catalog.mcuProfile(type)
+    if (profile && profile.pins > 0) return profile
+  } catch (err) {}
+  return fallback
+}
+
+function makeBoard(program, type) {
+  var profile = boardProfile(type)
+  try {
+    return Mcu.create(program, profile)
+  } catch (err) {
+    return Mcu.create(program)
+  }
+}
+
+function tinyRail(map, v) {
+  if (!map || !map.tiny || !v || map.vcc < 0 || map.gnd < 0) return 0
+  return nodeV(v, map.vcc) - nodeV(v, map.gnd)
+}
+
+function tinyOk(rail) {
+  return rail >= 2.7 && rail <= 5.5
+}
+
+function pinPwm(pin) {
+  if (!pin || pin.pwm === null || pin.pwm === undefined) return false
+  return isFinite(Number(pin.pwm))
+}
 
 function syncBoards(nl, state) {
   if (!state.mcu) state.mcu = {}
   var live = {}
   for (var i = 0; i < nl.elements.length; i++) {
     var el = nl.elements[i]
-    if (el.type !== "omaduino") continue
+    if (!isBoard(el.type)) continue
     var id = partId(el, i)
     live[id] = true
     var code = el.props && el.props.code ? String(el.props.code) : ""
     var slot = state.mcu[id]
-    if (slot && slot.code === code) continue
+    if (slot && slot.code === code && slot.type === el.type) continue
     if (!code) {
-      state.mcu[id] = { code: "", vm: null, error: "", errorLine: 0 }
+      state.mcu[id] = { code: "", type: el.type, vm: null, error: "", errorLine: 0 }
       continue
     }
     var compiled = Mcu.compile(code)
     if (!compiled || !compiled.ok) {
       var err = compiled && compiled.errors && compiled.errors[0] ? compiled.errors[0] : { line: 1, message: "This sketch didn't compile." }
-      state.mcu[id] = { code: code, vm: null, error: String(err.message || "This sketch didn't compile."), errorLine: err.line || 1 }
+      state.mcu[id] = { code: code, type: el.type, vm: null, error: String(err.message || "This sketch didn't compile."), errorLine: err.line || 1 }
     } else {
-      state.mcu[id] = { code: code, vm: Mcu.create(compiled.program), error: "", errorLine: 0 }
+      state.mcu[id] = { code: code, type: el.type, vm: makeBoard(compiled.program, el.type), error: "", errorLine: 0 }
     }
   }
   for (var k in state.mcu) if (!live[k]) delete state.mcu[k]
 }
 
 function boardMap(el) {
+  var profile = boardProfile(el && el.type)
+  var count = profile.pins > 0 ? profile.pins : 20
   var map = []
-  for (var i = 0; i < 20; i++) map.push(-1)
+  for (var i = 0; i < count; i++) map.push(-1)
   var gnd = -1
   var gnds = []
   var v5 = -1
   var v33 = -1
+  var vcc = -1
   var nodes = el && el.nodes ? el.nodes : []
+  var type = el && el.type
   for (var n = 0; n < nodes.length; n++) {
     var node = nodes[n]
     if (typeof node !== "number" || !isFinite(node)) continue
     node = node | 0
-    var name = (typeof Catalog !== "undefined" && Catalog.mcuPinNumber) ? Catalog.mcuPinNumber(n) : null
+    var name = (typeof Catalog !== "undefined" && Catalog.mcuPinNumber) ? Catalog.mcuPinNumber(n, type) : null
     if (name === "gnd") {
       gnds.push(node)
       if (gnd < 0) gnd = node
     } else if (name === "5v") v5 = node
     else if (name === "3v3") v33 = node
-    else if (typeof name === "number" && name >= 0 && name < 20) map[name] = node
+    else if (name === "vcc") vcc = node
+    else if (typeof name === "number" && name >= 0 && name < count) map[name] = node
   }
-  return { gnd: gnd, gnds: gnds, v5: v5, v33: v33, pins: map }
+  return { gnd: gnd, gnds: gnds, v5: v5, v33: v33, vcc: vcc, pins: map, tiny: !!(el && el.type === "omaTiny"), count: count }
 }
 
-function boardPlan(el, state, id) {
+function boardPlan(el, state, id, v) {
   var map = boardMap(el)
   var slot = state.mcu && state.mcu[id]
   var pinStates = slot && slot.vm ? slot.vm.pins : null
+  var rail = map.tiny ? tinyRail(map, v) : 5
+  var run = map.tiny ? tinyOk(rail) : map.gnd >= 0
   var outputs = []
-  if (map.gnd >= 0) {
-    if (map.v5 >= 0) outputs.push({ kind: "rail5" })
-    if (map.v33 >= 0) outputs.push({ kind: "rail33" })
-    for (var p = 0; p < 20; p++) {
+  if (run) {
+    if (!map.tiny) {
+      if (map.v5 >= 0) outputs.push({ kind: "rail5" })
+      if (map.v33 >= 0) outputs.push({ kind: "rail33" })
+    }
+    for (var p = 0; p < map.pins.length; p++) {
       if (map.pins[p] < 0) continue
       var mode = pinStates && pinStates[p] ? pinStates[p].mode : "in"
       if (mode === "out") outputs.push({ kind: "gpio", pin: p })
     }
   }
-  return { kind: "board", id: id, map: map, outputs: outputs, pinStates: pinStates }
+  return { kind: "board", id: id, map: map, outputs: outputs, pinStates: pinStates, rail: rail, run: run }
 }
 
-function gpioVolts(pin) {
+function gpioVolts(pin, rail) {
   if (!pin) return 0
-  if (pin.pwm !== null && pin.pwm !== undefined && isFinite(Number(pin.pwm))) {
+  if (!(rail > 0)) rail = 5
+  if (pin.pwm !== null && pin.pwm !== undefined) {
     var duty = Number(pin.pwm)
-    if (duty < 0) duty = 0
-    if (duty > 255) duty = 255
-    return 5 * duty / 255
+    if (isFinite(duty)) {
+      if (duty < 0) duty = 0
+      if (duty > 255) duty = 255
+      return rail * duty / 255
+    }
   }
-  return pin.level ? 5 : 0
+  return pin.level ? rail : 0
 }
 
-function gpioName(p) {
+function gpioName(p, tiny) {
+  if (tiny) return "PB" + p
   if (p >= 14) return "A" + (p - 14)
   return "D" + p
 }
@@ -2385,20 +2458,32 @@ function stampBoard(sys, src) {
   var gnd = map.gnd
   if (gnd < 0) return
   for (var g = 0; g < map.gnds.length; g++) stampG(sys, map.gnds[g], gnd, 1 / 0.05)
+  if (!src.run) {
+    for (var q = 0; q < map.pins.length; q++) {
+      if (map.pins[q] < 0) continue
+      stampG(sys, map.pins[q], gnd, 1 / 1e7)
+    }
+    return
+  }
   var pins = src.pinStates
+  var rail = map.tiny ? src.rail : 5
   for (var i = 0; i < src.outputs.length; i++) {
     var o = src.outputs[i]
     if (o.kind === "rail5") stampVsrc(sys, map.v5, gnd, 5, 0.2)
     else if (o.kind === "rail33") stampVsrc(sys, map.v33, gnd, 3.3, 1)
-    else stampVsrc(sys, map.pins[o.pin], gnd, gpioVolts(pins && pins[o.pin]), 25)
+    else if (map.tiny && map.vcc >= 0 && !pinPwm(pins && pins[o.pin])) {
+      if (pins && pins[o.pin] && pins[o.pin].level) stampVsrc(sys, map.pins[o.pin], map.vcc, 0, 25)
+      else stampVsrc(sys, map.pins[o.pin], gnd, 0, 25)
+    } else stampVsrc(sys, map.pins[o.pin], gnd, gpioVolts(pins && pins[o.pin], rail), 25)
   }
-  for (var p = 0; p < 20; p++) {
+  for (var p = 0; p < map.pins.length; p++) {
     var node = map.pins[p]
     if (node < 0) continue
     var pin = pins && pins[p] ? pins[p] : null
     var mode = pin && pin.mode ? pin.mode : "in"
     if (mode === "out") continue
     if (mode === "pullup" && map.v5 >= 0) stampG(sys, node, map.v5, 1 / 35000)
+    else if (mode === "pullup" && map.vcc >= 0) stampG(sys, node, map.vcc, 1 / 35000)
     else stampG(sys, node, gnd, 1 / 1e7)
   }
 }
@@ -2407,22 +2492,25 @@ function fillBoard(p, el, id, pv, state, v, warnings) {
   var map = boardMap(el)
   var slot = state.mcu && state.mcu[id]
   var gndV = map.gnd >= 0 ? nodeV(v, map.gnd) : 0
+  var rail = map.tiny ? tinyRail(map, v) : 5
+  var powered = map.tiny ? tinyOk(rail) : true
   var i5 = 0
   var i33 = 0
-  if (map.v5 >= 0 && map.gnd >= 0) {
+  if (!map.tiny && map.v5 >= 0 && map.gnd >= 0) {
     var v5 = nodeV(v, map.v5) - gndV
     i5 = (5 - v5) / 0.2
     if (i5 > 0.5) pushWarn(warnings, id, "warn", "The 5V pin is past its 0.5 A limit.")
   }
-  if (map.v33 >= 0 && map.gnd >= 0) {
+  if (!map.tiny && map.v33 >= 0 && map.gnd >= 0) {
     var v33 = nodeV(v, map.v33) - gndV
     i33 = (3.3 - v33) / 1
     if (i33 > 0.05) pushWarn(warnings, id, "warn", "The 3.3V pin is past its 0.05 A limit.")
   }
+  if (map.tiny && map.vcc >= 0 && map.gnd >= 0 && rail > 6) pushWarn(warnings, id, "warn", TINY_VOLT)
   var srcPins = slot && slot.vm ? slot.vm.pins : null
   var pins = []
   var iGpio = 0
-  for (var i = 0; i < 20; i++) {
+  for (var i = 0; i < map.pins.length; i++) {
     var src = srcPins && srcPins[i] ? srcPins[i] : { mode: "in", level: 0, pwm: null, servo: null, tone: null }
     pins.push({
       mode: src.mode || "in",
@@ -2431,15 +2519,17 @@ function fillBoard(p, el, id, pv, state, v, warnings) {
       servo: src.servo === undefined ? null : src.servo,
       tone: src.tone === undefined ? null : src.tone
     })
-    if (src.mode === "out" && map.pins[i] >= 0 && map.gnd >= 0) {
-      var ideal = gpioVolts(src)
+    if (powered && src.mode === "out" && map.pins[i] >= 0 && map.gnd >= 0) {
+      var ideal = gpioVolts(src, map.tiny ? rail : 5)
       var iPin = (ideal - (nodeV(v, map.pins[i]) - gndV)) / 25
       iGpio += iPin
       var ma = Math.abs(iPin) * 1000
-      if (ma > 40) pushWarn(warnings, id, "warn", "Pin " + gpioName(i) + " is giving " + Math.round(ma) + " mA; add a resistor (220 Ω for an LED).")
+      if (ma > 40) pushWarn(warnings, id, "warn", "Pin " + gpioName(i, map.tiny) + " is giving " + Math.round(ma) + " mA; add a resistor (220 Ω for an LED).")
       var node = map.pins[i]
-      if (node === map.gnd || (map.v5 >= 0 && node === map.v5)) {
-        pushWarn(warnings, id, "danger", "Pin " + gpioName(i) + " is shorted straight to " + (node === map.gnd ? "GND" : "5V") + ".")
+      var shorted = node === map.gnd || (!map.tiny && map.v5 >= 0 && node === map.v5) || (map.tiny && map.vcc >= 0 && node === map.vcc)
+      if (shorted) {
+        var shortTo = node === map.gnd ? "GND" : (map.tiny ? "VCC" : "5V")
+        pushWarn(warnings, id, "danger", "Pin " + gpioName(i, map.tiny) + " is shorted straight to " + shortTo + ".")
       }
     }
   }
@@ -2452,44 +2542,55 @@ function fillBoard(p, el, id, pv, state, v, warnings) {
     p.error = slot.vm.error
     p.errorLine = slot.vm.errorLine || 0
   }
-  p.running = !!(slot && slot.vm && !p.error)
+  p.running = !!(slot && slot.vm && !p.error) && powered
   p.current = i5 + i33 + iGpio
   p.power = 0
-  p.pinCurrents = boardPinCurrents(el, map, srcPins, v, gndV, i5, i33)
+  p.pinCurrents = boardPinCurrents(el, map, srcPins, v, gndV, i5, i33, powered)
 }
 
-function boardPinCurrents(el, map, srcPins, v, gndV, i5, i33) {
+function boardPinCurrents(el, map, srcPins, v, gndV, i5, i33, powered) {
   var nodes = el && el.nodes ? el.nodes : []
   var into = []
   var gndHeader = []
   var v5Header = -1
+  var vccHeader = -1
   var headerOf = []
-  for (var s = 0; s < 20; s++) headerOf.push(-1)
+  var count = map.pins.length
+  var type = el && el.type
+  for (var s = 0; s < count; s++) headerOf.push(-1)
   for (var h = 0; h < nodes.length; h++) {
     into.push(0)
-    var name = (typeof Catalog !== "undefined" && Catalog.mcuPinNumber) ? Catalog.mcuPinNumber(h) : null
+    var name = (typeof Catalog !== "undefined" && Catalog.mcuPinNumber) ? Catalog.mcuPinNumber(h, type) : null
     if (name === "gnd") gndHeader.push(h)
     else if (name === "5v") v5Header = h
-    else if (typeof name === "number" && name >= 0 && name < 20) headerOf[name] = h
+    else if (name === "vcc") vccHeader = h
+    else if (typeof name === "number" && name >= 0 && name < count) headerOf[name] = h
   }
   if (map.gnd < 0) return into
-  if (v5Header >= 0 && map.v5 >= 0) into[v5Header] = -i5
+  var rail = map.tiny ? tinyRail(map, v) : 5
+  if (!map.tiny && v5Header >= 0 && map.v5 >= 0) into[v5Header] = -i5
   for (var h3 = 0; h3 < nodes.length; h3++) {
-    var name3 = (typeof Catalog !== "undefined" && Catalog.mcuPinNumber) ? Catalog.mcuPinNumber(h3) : null
-    if (name3 === "3v3" && map.v33 >= 0) into[h3] = -i33
+    var name3 = (typeof Catalog !== "undefined" && Catalog.mcuPinNumber) ? Catalog.mcuPinNumber(h3, type) : null
+    if (name3 === "3v3" && map.v33 >= 0 && !map.tiny) into[h3] = -i33
   }
-  for (var p = 0; p < 20; p++) {
+  for (var p = 0; p < count; p++) {
     var header = headerOf[p]
     if (header < 0 || map.pins[p] < 0) continue
     var src = srcPins && srcPins[p] ? srcPins[p] : null
     var mode = src && src.mode ? src.mode : "in"
     var vpin = nodeV(v, map.pins[p])
-    if (mode === "out") {
-      into[header] = -((gpioVolts(src) - (vpin - gndV)) / 25)
-    } else if (mode === "pullup" && map.v5 >= 0) {
+    if (mode === "out" && powered) {
+      var iExt = -((gpioVolts(src, map.tiny ? rail : 5) - (vpin - gndV)) / 25)
+      into[header] = iExt
+      if (map.tiny && src && src.level && !pinPwm(src) && vccHeader >= 0) into[vccHeader] -= iExt
+    } else if (mode === "pullup" && powered && map.v5 >= 0) {
       var iPull = (vpin - nodeV(v, map.v5)) / 35000
       into[header] = iPull
       if (v5Header >= 0) into[v5Header] -= iPull
+    } else if (mode === "pullup" && powered && map.vcc >= 0) {
+      var iPullT = (vpin - nodeV(v, map.vcc)) / 35000
+      into[header] = iPullT
+      if (vccHeader >= 0) into[vccHeader] -= iPullT
     } else {
       into[header] = (vpin - gndV) / 1e7
     }
@@ -2516,16 +2617,18 @@ function runBoards(nl, state, result, v, dt) {
   var answered = {}
   for (var i = 0; i < nl.elements.length; i++) {
     var el = nl.elements[i]
-    if (el.type !== "omaduino") continue
+    if (!isBoard(el.type)) continue
     var id = partId(el, i)
     var slot = state.mcu && state.mcu[id]
     if (!slot || !slot.vm || slot.error) continue
-    var before = slot.vm.serial ? String(slot.vm.serial) : ""
     var map = boardMap(el)
+    if (map.tiny && !tinyOk(tinyRail(map, v))) continue
+    var before = slot.vm.serial ? String(slot.vm.serial) : ""
+    var count = map.pins.length
     slot.vm.run(slot.vm.time + stepUs, {
       volts: function (pin) {
         pin = pin | 0
-        if (pin < 0 || pin >= 20 || map.gnd < 0) return 0
+        if (pin < 0 || pin >= count || map.gnd < 0) return 0
         var node = map.pins[pin]
         if (node < 0) return 0
         return nodeV(v, node) - nodeV(v, map.gnd)
@@ -2636,12 +2739,12 @@ function servoDriveAngle(state, nl, signalNode) {
   if (!nl || signalNode < 0) return null
   for (var i = 0; i < nl.elements.length; i++) {
     var el = nl.elements[i]
-    if (el.type !== "omaduino") continue
+    if (!isBoard(el.type)) continue
     var map = boardMap(el)
     var slot = state.mcu && state.mcu[partId(el, i)]
     var srcPins = slot && slot.vm ? slot.vm.pins : null
     if (!srcPins) continue
-    for (var s = 0; s < 20; s++) {
+    for (var s = 0; s < map.pins.length; s++) {
       if (map.pins[s] !== signalNode) continue
       var src = srcPins[s]
       if (!src || src.servo === null || src.servo === undefined) continue
@@ -2683,12 +2786,12 @@ function pwmOnNode(state, nl, node) {
   if (!nl || !state) return null
   for (var i = 0; i < nl.elements.length; i++) {
     var el = nl.elements[i]
-    if (el.type !== "omaduino") continue
+    if (!isBoard(el.type)) continue
     var map = boardMap(el)
     var slot = state.mcu && state.mcu[partId(el, i)]
     var srcPins = slot && slot.vm ? slot.vm.pins : null
     if (!srcPins) continue
-    for (var p = 0; p < 20; p++) {
+    for (var p = 0; p < map.pins.length; p++) {
       if (map.pins[p] !== node) continue
       var src = srcPins[p]
       if (!src || src.pwm === null || src.pwm === undefined) continue
@@ -2740,7 +2843,7 @@ function fillDriver(p, el, id, v, state, nl, warnings) {
 
 function sonarEchoUs(nl, v, map, pin, answered) {
   pin = pin | 0
-  if (!nl || !map || pin < 0 || pin >= 20) return 0
+  if (!nl || !map || !map.pins || pin < 0 || pin >= map.pins.length) return 0
   var echoNode = map.pins[pin]
   if (echoNode < 0) return 0
   for (var i = 0; i < nl.elements.length; i++) {
@@ -2757,9 +2860,9 @@ function sonarEchoUs(nl, v, map, pin, answered) {
 
 function trigOnBoard(nl, trigNode) {
   for (var i = 0; i < nl.elements.length; i++) {
-    if (nl.elements[i].type !== "omaduino") continue
+    if (!isBoard(nl.elements[i].type)) continue
     var map = boardMap(nl.elements[i])
-    for (var p = 0; p < 20; p++) if (map.pins[p] === trigNode) return true
+    for (var p = 0; p < map.pins.length; p++) if (map.pins[p] === trigNode) return true
   }
   return false
 }
@@ -2775,8 +2878,9 @@ function copyBoardRuntime(part, slot, before) {
   if (!part || !slot || !slot.vm) return
   var srcPins = slot.vm.pins
   var pins = []
-  for (var i = 0; i < 20; i++) {
-    var src = srcPins && srcPins[i] ? srcPins[i] : { mode: "in", level: 0, pwm: null, servo: null, tone: null }
+  var nPins = srcPins ? srcPins.length : 0
+  for (var i = 0; i < nPins; i++) {
+    var src = srcPins[i] ? srcPins[i] : { mode: "in", level: 0, pwm: null, servo: null, tone: null }
     pins.push({
       mode: src.mode || "in",
       level: src.level ? 1 : 0,

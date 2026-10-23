@@ -1497,6 +1497,149 @@ var tSum = 0
 part(pulseLast, "u").pinCurrents.forEach(function (x) { tSum += x })
 assert.ok(Math.abs(tSum) < 1e-6, "555 KCL " + tSum)
 
+// --- OmaNano rails match the OmaDuino; Blink on D13; OmaTiny blinks from 5 V ---
+var TINY_WARN = "This OmaTiny needs between 2.7 V and 5.5 V on VCC. Above 6 V it stays off."
+assert.strictEqual(E.isTimeDependent(net([{ id: "n", type: "omaNano", nodes: [0], props: {} }], 1)), true)
+assert.strictEqual(E.isTimeDependent(net([{ id: "t", type: "omaTiny", nodes: [0], props: {} }], 1)), true)
+
+function headerNodes(n, gnds) {
+  var nodes = []
+  for (var i = 0; i < n; i++) nodes.push(100 + i)
+  for (var g = 0; g < gnds.length; g++) nodes[gnds[g]] = 0
+  return nodes
+}
+function runsOf(bits) {
+  var runs = []
+  var cur = bits[0]
+  var count = 0
+  for (var i = 0; i < bits.length; i++) {
+    if (bits[i] === cur) count++
+    else { runs.push(cur + "x" + count); cur = bits[i]; count = 1 }
+  }
+  runs.push(cur + "x" + count)
+  return runs
+}
+function firstOnOff(runs) {
+  var on = 0
+  var off = 0
+  for (var i = 0; i < runs.length; i++) {
+    var piece = runs[i].split("x")
+    var n = Number(piece[1])
+    if (piece[0] === "1" && on === 0) on = n
+    else if (piece[0] === "0" && on > 0 && off === 0) off = n
+  }
+  return { on: on, off: off }
+}
+
+var nanoRails = headerNodes(22, [20, 21])
+nanoRails[18] = 1
+nanoRails[19] = 2
+var nanoDc = solve([
+  { id: "nano", type: "omaNano", nodes: nanoRails, props: { code: "" } },
+  { id: "r5", type: "resistor", nodes: [1, 0], props: { ohms: 100 } },
+  { id: "r3", type: "resistor", nodes: [2, 0], props: { ohms: 100 } }
+], 130)
+assert.strictEqual(nanoDc.converged, true)
+console.log("nano 5V", nanoDc.nodeVolts[1].toFixed(3), "3V3", nanoDc.nodeVolts[2].toFixed(3))
+assert.ok(Math.abs(nanoDc.nodeVolts[1] - 4.99) < 0.02, "nano 5V " + nanoDc.nodeVolts[1])
+assert.ok(Math.abs(nanoDc.nodeVolts[2] - 3.267) < 0.02, "nano 3.3V " + nanoDc.nodeVolts[2])
+assert.strictEqual(nanoDc.parts.nano.pins.length, 20)
+assert.strictEqual(nanoDc.parts.nano.pinCurrents.length, 22)
+var nanoSum = 0
+nanoDc.parts.nano.pinCurrents.forEach(function (x) { nanoSum += x })
+assert.ok(Math.abs(nanoSum) < 1e-6, "nano KCL " + nanoSum)
+
+var nanoBlinkNodes = headerNodes(22, [20, 21])
+nanoBlinkNodes[11] = 2
+var nanoBlink = net([
+  { id: "nano", type: "omaNano", nodes: nanoBlinkNodes, props: { code: McuLib.example("blink") } },
+  { id: "r", type: "resistor", nodes: [2, 3], props: { ohms: 220 } },
+  { id: "d", type: "led", nodes: [3, 0], props: { color: "red" } }
+], 130)
+var nanoState = E.createState()
+var nanoBits = []
+var nanoLast = null
+for (var nbt = 0; nbt < 1200; nbt++) {
+  nanoLast = E.solve(nanoBlink, nanoState, 0.001)
+  nanoBits.push(nanoLast.parts.d.brightness > 0.2 ? 1 : 0)
+}
+var nanoTimes = firstOnOff(runsOf(nanoBits))
+console.log("nano blink", runsOf(nanoBits).join(" "))
+assert.strictEqual(nanoLast.converged, true)
+assert.ok(nanoTimes.on > 450 && nanoTimes.on < 560, "nano LED on about 500 ms, was " + nanoTimes.on)
+assert.ok(nanoTimes.off > 450 && nanoTimes.off < 560, "nano LED off about 500 ms, was " + nanoTimes.off)
+assert.strictEqual(nanoState.mcu.nano.vm.pins.length, 20)
+assert.strictEqual(nanoState.mcu.nano.vm.pins[13].mode, "out")
+assert.strictEqual(nanoLast.parts.nano.pins.length, 20)
+
+function tinyCircuit(volts, code) {
+  return net([
+    { id: "src", type: "benchSupply", nodes: [1, 0], props: { volts: volts, currentLimit: 0.5 } },
+    { id: "tiny", type: "omaTiny", nodes: [10, 11, 12, 0, 2, 13, 14, 1], props: { code: code } },
+    { id: "r", type: "resistor", nodes: [2, 3], props: { ohms: 220 } },
+    { id: "d", type: "led", nodes: [3, 0], props: { color: "red" } }
+  ], 15)
+}
+var tinyBlink = tinyCircuit(5, McuLib.example("tinyblink"))
+var tinyState = E.createState()
+var tinyBits = []
+var tinyLast = null
+for (var tbt = 0; tbt < 1200; tbt++) {
+  tinyLast = E.solve(tinyBlink, tinyState, 0.001)
+  tinyBits.push(tinyLast.parts.d.brightness > 0.2 ? 1 : 0)
+}
+var tinyTimes = firstOnOff(runsOf(tinyBits))
+console.log("tiny blink", runsOf(tinyBits).join(" "), "running", tinyLast.parts.tiny.running)
+assert.strictEqual(tinyLast.converged, true)
+assert.strictEqual(tinyLast.parts.tiny.running, true)
+assert.ok(tinyTimes.on > 450 && tinyTimes.on < 560, "tiny LED on about 500 ms, was " + tinyTimes.on)
+assert.ok(tinyTimes.off > 450 && tinyTimes.off < 560, "tiny LED off about 500 ms, was " + tinyTimes.off)
+assert.strictEqual(tinyState.mcu.tiny.vm.pins.length, 5)
+assert.strictEqual(tinyState.mcu.tiny.vm.pins[0].mode, "out")
+assert.strictEqual(tinyLast.parts.tiny.pins.length, 5)
+assert.strictEqual(tinyLast.parts.tiny.pinCurrents.length, 8)
+var tinySum = 0
+tinyLast.parts.tiny.pinCurrents.forEach(function (x) { tinySum += x })
+assert.ok(Math.abs(tinySum) < 1e-6, "tiny KCL " + tinySum)
+
+var tinyForce = E.createState()
+E.solve(tinyBlink, tinyForce, 0)
+tinyForce.mcu.tiny.vm.pins[0].mode = "out"
+tinyForce.mcu.tiny.vm.pins[0].level = 1
+var tinyHi = E.solve(tinyBlink, tinyForce, 0)
+console.log("tiny high PB0", tinyHi.parts.tiny.pinCurrents[4].toFixed(4), "VCC", tinyHi.parts.tiny.pinCurrents[7].toFixed(4), "led", tinyHi.parts.d.brightness.toFixed(3))
+assert.strictEqual(tinyHi.converged, true)
+assert.ok(tinyHi.parts.d.brightness > 0.2, "tiny HIGH lights the LED " + tinyHi.parts.d.brightness)
+assert.ok(tinyHi.parts.tiny.pinCurrents[4] < -0.005, "PB0 sources " + tinyHi.parts.tiny.pinCurrents[4])
+assert.ok(tinyHi.parts.tiny.pinCurrents[7] > 0.005, "current enters VCC " + tinyHi.parts.tiny.pinCurrents[7])
+
+var tinyHotState = E.createState()
+var tinyHot = null
+for (var th = 0; th < 5; th++) tinyHot = E.solve(tinyCircuit(9, McuLib.example("tinyblink")), tinyHotState, 0.001)
+console.log("tiny 9V running", tinyHot.parts.tiny.running, "led", tinyHot.parts.d.brightness.toFixed(4))
+assert.strictEqual(tinyHot.converged, true)
+assert.strictEqual(tinyHot.parts.tiny.running, false)
+assert.ok(tinyHot.parts.d.brightness < 0.05, "9 V keeps the LED dark")
+assert.ok((tinyHot.warnings || []).some(function (w) {
+  return w.part === "tiny" && w.message === TINY_WARN
+}), "overvoltage warning")
+
+var duoState = E.createState()
+var duo = net([
+  duinoElement(STUB),
+  { id: "src", type: "benchSupply", nodes: [80, 0], props: { volts: 5, currentLimit: 0.2 } },
+  { id: "tiny", type: "omaTiny", nodes: [81, 82, 83, 0, 84, 85, 86, 80], props: { code: STUB } }
+], 120)
+var duoResult = E.solve(duo, duoState, 0.001)
+assert.strictEqual(duoResult.converged, true)
+assert.ok(duoState.mcu.mcu.vm && duoState.mcu.tiny.vm)
+assert.notStrictEqual(duoState.mcu.mcu.vm, duoState.mcu.tiny.vm)
+assert.strictEqual(duoState.mcu.mcu.vm.pins.length, 20)
+assert.strictEqual(duoState.mcu.tiny.vm.pins.length, 5)
+assert.strictEqual(duoResult.parts.mcu.pins.length, 20)
+assert.strictEqual(duoResult.parts.tiny.pins.length, 5)
+assert.strictEqual(duoResult.parts.tiny.running, true)
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.
