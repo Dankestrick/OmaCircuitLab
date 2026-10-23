@@ -278,8 +278,8 @@ var painters = {
     ctx.fillStyle = "#b0bec5"; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 0.06; ctx.stroke()
     ctx.fillStyle = "#eceff1"
     ctx.beginPath(); ctx.arc(1.5, 2.3, 1.3, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
-    // Shaft flag: the overlay animates `angle`.
-    var a = toNumber(live.angle, 0)
+    // Shaft flag: the overlay animates `spinAngle`.
+    var a = toNumber(live.spinAngle, 0)
     ctx.strokeStyle = "#d32f2f"; ctx.lineWidth = 0.22; ctx.lineCap = "round"
     ctx.beginPath(); ctx.moveTo(1.5 - Math.cos(a) * 1.0, 2.3 - Math.sin(a) * 1.0); ctx.lineTo(1.5 + Math.cos(a) * 1.0, 2.3 + Math.sin(a) * 1.0); ctx.stroke()
     ctx.fillStyle = "#37474f"

@@ -68,7 +68,7 @@ Item {
       ctx.scale(root.cell, root.cell)
       ctx.translate(root.pad - root.box[0], root.pad - root.box[1])
       var live = root.live ? JSON.parse(JSON.stringify(root.live)) : {}
-      live.angle = root.angle
+      live.spinAngle = root.angle   // the motor's turning animation; a servo's own angle comes from the engine
       live.phase = root.phase
       PartArt.draw(ctx, root.part, live, root.running)
       ctx.restore()
