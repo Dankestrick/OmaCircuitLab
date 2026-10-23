@@ -10,6 +10,7 @@ import "lib/Bench.js" as Bench
 import "lib/Clamp.js" as Clamp
 import "lib/Lessons.js" as Lessons
 import "lib/Guide.js" as Guide
+import "lib/TryIt.js" as TryIt
 import "lib/Arena.js" as Arena
 
 // The OmaCircuitLab window. Opened from the app menu (omarchy-shell shell
@@ -1081,6 +1082,7 @@ Item {
                 index: root.lessonIndex
                 status: root.lessonStatus
                 steps: root.guideSteps
+                tryIt: root.lesson ? TryIt.steps[root.lesson.id] || [] : []
                 done: root.guideDone
                 onPreview: function (i) { root.guidePreview = i }
                 onPick: function (i) { root.lessonIndex = i }
