@@ -57,7 +57,11 @@ Flickable {
       Layout.fillWidth: true
       spacing: Style.spacing.md
 
+      // Long names (HC-SR04, function generator) wrap, so they can't widen
+      // the column and push the readings off the right edge.
       Text {
+        Layout.fillWidth: true
+        wrapMode: Text.WordWrap
         text: root.def ? root.def.name : ""
         color: root.theme.fg
         font.family: root.theme.fontFamily
