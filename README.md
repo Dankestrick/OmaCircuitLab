@@ -53,6 +53,15 @@ Open **OmaCircuitLab** from the app menu.
 
 The window opens **Solid**: OmaCircuitLab asks Hyprland to draw its own window fully opaque, so a see-through dark theme never bleeds into the circuit. The toolbar's **Window** buttons switch between Solid, **Theme** (normal Omarchy transparency) and **Custom** (your own opacity). The breadboard itself is always light with outlined parts and wires.
 
+## Follows your Omarchy theme
+
+The panels, buttons and accents take their colors from your current Omarchy theme and change the moment you switch themes. The breadboard and parts keep their real-world look on every theme.
+
+| | |
+|---|---|
+| ![Tokyo Night](docs/screenshots/theme-tokyo-night.png) | ![Catppuccin](docs/screenshots/theme-catppuccin.png) |
+| ![Gruvbox](docs/screenshots/theme-gruvbox.png) | ![Everforest](docs/screenshots/theme-everforest.png) |
+
 ## Light on your PC
 
 Nothing runs while the window is closed: the shell only loads OmaCircuitLab when you open it. While open, the circuit solver runs on its own thread, only when something changes. Circuits that change over time (capacitors, motors, AC, programmed boards) step only while the window is open and running. Sound is off until you turn it on.
