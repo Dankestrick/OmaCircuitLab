@@ -60,7 +60,8 @@ export function createState() {
     scope: {},
     fuse: {},
     indI: {},
-    relayOn: {}
+    relayOn: {},
+    timer: {}
   }
 }
 
@@ -69,7 +70,7 @@ export function isTimeDependent(netlist) {
   if (!els) return false
   for (var i = 0; i < els.length; i++) {
     var t = els[i].type
-    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter" || t === "oscilloscope" || t === "inductor" || t === "transformer" || t === "relay") return true
+    if (t === "capacitor" || t === "electrolytic" || t === "motor" || t === "buzzer" || t === "omaduino" || t === "hcsr04" || t === "servo" || t === "motorDriver" || t === "robotCar" || t === "acSource" || t === "acAdapter" || t === "oscilloscope" || t === "inductor" || t === "transformer" || t === "relay" || t === "timer555") return true
   }
   return false
 }
@@ -164,6 +165,7 @@ export function ensureState(state) {
   if (!state.fuse) state.fuse = {}
   if (!state.indI) state.indI = {}
   if (!state.relayOn) state.relayOn = {}
+  if (!state.timer) state.timer = {}
   if (!state.spin) state.spin = {}
   if (!state.mcu) state.mcu = {}
   if (!state.servoAngle) state.servoAngle = {}
@@ -494,6 +496,26 @@ export function stampOpamp(sys, src, v) {
   }
   var rails = opRails(v, src)
   sys.z[k] += src.mode === "hi" ? rails.hi : rails.lo
+}
+
+export function stampTimer(sys, src) {
+  var n = src.pins
+  var gnd = n[0]
+  var out = n[2]
+  var reset = n[3]
+  var ctrl = n[4]
+  var dis = n[6]
+  var vcc = n[7]
+  // 5k above CTRL and 10k below it: open CTRL sits at 2/3 VCC.
+  stampG(sys, vcc, ctrl, 1 / 5000)
+  stampG(sys, ctrl, gnd, 1 / 10000)
+  stampG(sys, reset, vcc, 1 / 100000)
+  if (src.q) {
+    src.k = stampVsrc(sys, out, vcc, -1.5, 10)
+  } else {
+    src.k = stampVsrc(sys, out, gnd, 0.1, 10)
+    stampG(sys, dis, gnd, 1 / 10)
+  }
 }
 
 export function stampGmin(sys) {
@@ -866,6 +888,12 @@ export function sourceList(nl, v, state, work) {
       var omode = work.opMode[id]
       if (omode !== "lin" && omode !== "hi" && omode !== "lo") omode = "lin"
       list.push({ kind: "op", id: id, inn: nop[0], inp: nop[1], vn: nop[2], vpwr: nop[3], out: nop[4], mode: omode })
+    } else if (kind === "timer555") {
+      var n555 = pins(el, nl.nodeCount, 8)
+      if (!n555) { list.push(null); continue }
+      nExtra++
+      if (!state.timer[id]) state.timer[id] = { q: 0, rises: [] }
+      list.push({ kind: "t555", id: id, pins: n555, q: state.timer[id].q === 1 })
     } else {
       list.push(null)
     }
@@ -917,6 +945,7 @@ export function noteModes(built, v, work, nl, state) {
   noteRelays(nl, v, work, state)
   noteRegulators(built, v, work)
   noteOpamps(built, v, work)
+  noteTimers(built, v, work, state)
 }
 
 export function noteOpamps(built, v, work) {
@@ -961,6 +990,42 @@ export function noteRegulators(built, v, work) {
     var next = regRegion(vin, s.mode)
     if (next !== s.mode) work.changed = true
     work.regMode[s.id] = next
+  }
+}
+
+export function noteTimers(built, v, work, state) {
+  if (!state.timer) state.timer = {}
+  var srcs = built.sources
+  for (var i = 0; i < srcs.length; i++) {
+    var s = srcs[i]
+    if (!s || s.kind !== "t555") continue
+    var n = s.pins
+    var tm = state.timer[s.id]
+    if (!tm) tm = state.timer[s.id] = { q: 0, rises: [] }
+    if (!tm.rises) tm.rises = []
+    var was = s.q === true
+    var vctrl = nodeV(v, n[4])
+    var now = was
+    // One flip per solve. An open timing cap at DC would otherwise set and
+    // reset forever, and the Newton loop would never settle.
+    if (!work.timerHold) work.timerHold = {}
+    if (!work.timerHold[s.id]) {
+      if (nodeV(v, n[3]) < 0.7) now = false
+      else if (nodeV(v, n[5]) > vctrl) now = false
+      else if (nodeV(v, n[1]) < vctrl * 0.5) now = true
+      if (now !== was) work.timerHold[s.id] = true
+    }
+    if (now !== was) work.changed = true
+    if (now && !was) {
+      var tt = work.t
+      if (tm.rises.length === 0 || tm.rises[tm.rises.length - 1] !== tt) {
+        tm.rises.push(tt)
+        if (tm.rises.length > 4) tm.rises.shift()
+      }
+    } else if (!now && was) {
+      if (tm.rises.length && tm.rises[tm.rises.length - 1] === work.t) tm.rises.pop()
+    }
+    tm.q = now ? 1 : 0
   }
 }
 
@@ -1036,6 +1101,11 @@ export function build(nl, state, v, dt, ref, work) {
     }
     if (src && src.kind === "op") {
       stampOpamp(sys, src, v)
+      sources.push(src)
+      continue
+    }
+    if (src && src.kind === "t555") {
+      stampTimer(sys, src)
       sources.push(src)
       continue
     }
@@ -1334,6 +1404,8 @@ export function assemble(nl, state, v, dt, converged, work) {
       fillRegulator(p, id, pv, warnings)
     } else if (kind === "opamp") {
       fillOpamp(p, pv)
+    } else if (kind === "timer555") {
+      fillTimer(p, id, pv, state)
     } else if (kind === "capacitor" || kind === "electrolytic") {
       fillCap(p, el, id, pv, state, dt, warnings)
     } else if (kind === "multimeter") {
@@ -1946,6 +2018,34 @@ export function stampTransformer(sys, src) {
 }
 
 export var RELAY_SPIKE = "The relay coil spiked below -20 V when it turned off. Put a diode across the coil, stripe toward +."
+
+export function fillTimer(p, id, pv, state) {
+  var tm = state.timer && state.timer[id]
+  var q = tm && tm.q === 1
+  var vgnd = pv[0] || 0
+  var vout = pv[2] || 0
+  var vreset = pv[3] || 0
+  var vctrl = pv[4] || 0
+  var vdis = pv[6] || 0
+  var vvcc = pv[7] || 0
+  var i5 = (vvcc - vctrl) / 5000
+  var i10 = (vctrl - vgnd) / 10000
+  var ipu = (vvcc - vreset) / 100000
+  var iOut = q ? (vout - vvcc + 1.5) / 10 : (vout - vgnd - 0.1) / 10
+  var iDis = q ? 0 : (vdis - vgnd) / 10
+  var iGnd = i10 + (q ? 0 : (-iOut - iDis))
+  var iVcc = -i5 - ipu + (q ? -iOut : 0)
+  p.current = iGnd
+  p.out = q ? 1 : 0
+  p.freq = 0
+  if (tm && tm.rises && tm.rises.length >= 2) {
+    var last = tm.rises[tm.rises.length - 1]
+    var prev = tm.rises[tm.rises.length - 2]
+    if (last > prev) p.freq = 1 / (last - prev)
+  }
+  p.power = Math.abs(iOut * (vout - vgnd))
+  p.pinCurrents = [iGnd, 0, iOut, ipu, i5 - i10, 0, iDis, iVcc]
+}
 
 export function fillOpamp(p, pv) {
   var vn = pv[2] || 0

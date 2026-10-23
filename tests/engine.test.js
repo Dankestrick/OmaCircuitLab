@@ -1470,6 +1470,33 @@ assert.strictEqual(opLo.converged, true)
 assert.ok(Math.abs(part(opLo, "u").out - 0.05) < 0.02, "lower rail " + part(opLo, "u").out)
 assert.strictEqual(part(opLo, "u").saturated, true)
 
+// --- 555 astable: R1 1k, R2 10k, C 10 µF, about 6.9 Hz ---
+assert.strictEqual(E.isTimeDependent(net([{ id: "u", type: "timer555", nodes: [0, 1, 2, 3, 4, 5, 6, 7], props: {} }], 8)), true)
+var heldOff = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "u", type: "timer555", nodes: [0, 0, 2, 0, 3, 0, 4, 1], props: {} }
+], 5)
+assert.strictEqual(heldOff.converged, true)
+assert.strictEqual(part(heldOff, "u").out, 0, "RESET low forces the output low")
+assert.strictEqual(part(heldOff, "u").pinCurrents.length, 8)
+
+var astable = net([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "u", type: "timer555", nodes: [0, 2, 3, 1, 4, 2, 5, 1], props: {} },
+  { id: "r1", type: "resistor", nodes: [1, 5], props: { ohms: 1000 } },
+  { id: "r2", type: "resistor", nodes: [5, 2], props: { ohms: 10000 } },
+  { id: "c", type: "capacitor", nodes: [2, 0], props: { farads: 10e-6 } }
+], 6)
+var pulse = E.createState()
+var pulseLast = null
+for (var pulseI = 0; pulseI < 500; pulseI++) pulseLast = E.solve(astable, pulse, 0.001)
+console.log("555", part(pulseLast, "u").freq.toFixed(3), "Hz", "out", part(pulseLast, "u").out, "t", pulse.t.toFixed(3))
+assert.strictEqual(pulseLast.converged, true)
+assert.ok(Math.abs(part(pulseLast, "u").freq - 6.86) < 0.2, "about 6.9 Hz " + part(pulseLast, "u").freq)
+var tSum = 0
+part(pulseLast, "u").pinCurrents.forEach(function (x) { tSum += x })
+assert.ok(Math.abs(tSum) < 1e-6, "555 KCL " + tSum)
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.
