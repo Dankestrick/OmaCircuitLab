@@ -573,5 +573,6 @@ export function groundPin(type) {
   if (parts[type].category === "power") return 1
   if (type === "acSource" || type === "acAdapter") return 1
   if (type === "omaduino") return 0
+  if (type === "omaNano") return 20
   return -1
 }

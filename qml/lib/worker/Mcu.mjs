@@ -1279,6 +1279,21 @@ export var examples = [
 "}\n" }
 ]
 
+examples.push({ id: "tinyblink", title: "Tiny blink (OmaTiny)", text:
+"// Blink an LED on an OmaTiny chip.\n" +
+"// PB0 (pin 0) → 220 Ω → LED → GND. Power VCC and GND yourself (3–5 V).\n" +
+"\n" +
+"void setup() {\n" +
+"  pinMode(0, OUTPUT);\n" +
+"}\n" +
+"\n" +
+"void loop() {\n" +
+"  digitalWrite(0, HIGH);\n" +
+"  delay(500);\n" +
+"  digitalWrite(0, LOW);\n" +
+"  delay(500);\n" +
+"}\n" })
+
 export function example(id) {
   for (var i = 0; i < examples.length; i++) if (examples[i].id === id) return examples[i].text
   return examples[0].text
