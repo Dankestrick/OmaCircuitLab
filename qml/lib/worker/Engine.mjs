@@ -730,6 +730,18 @@ export function build(nl, state, v, dt, ref, work) {
       var lp = ledParams(str(el, "color", "red"))
       var vd = limitJunction(work, id, nodeV(v, nd[0]) - nodeV(v, nd[1]), lp.vf + 0.45, -5, lp.nVt, lp.is)
       stampDiode(sys, nd[0], nd[1], vd, lp.is, lp.nVt)
+    } else if (el.type === "sevenSeg") {
+      var n7 = pins(el, nl.nodeCount, 9)
+      if (!n7) continue
+      var common = n7[8]
+      var segNames = ["a", "b", "c", "d", "e", "f", "g", "dp"]
+      var lp7 = ledParams("red")
+      for (var s7 = 0; s7 < 8; s7++) {
+        var sid = id + ":" + segNames[s7]
+        if (state.burnt[sid]) continue
+        var vd7 = limitJunction(work, sid, nodeV(v, n7[s7]) - nodeV(v, common), lp7.vf + 0.45, -5, lp7.nVt, lp7.is)
+        stampDiode(sys, n7[s7], common, vd7, lp7.is, lp7.nVt)
+      }
     } else if (el.type === "rgbLed") {
       var nr = pins(el, nl.nodeCount, 4)
       if (!nr) continue
@@ -868,6 +880,8 @@ export function assemble(nl, state, v, dt, converged, work) {
       fillPot(p, el, pv)
     } else if (kind === "led") {
       fillLed(p, el, id, pv, state, warnings)
+    } else if (kind === "sevenSeg") {
+      fillSeven(p, el, id, pv, state, warnings)
     } else if (kind === "rgbLed") {
       fillRgb(p, el, id, pv, state, warnings)
     } else if (kind === "diode") {
@@ -1017,6 +1031,43 @@ export function fillLed(p, el, id, pv, state, warnings) {
   } else if (vd < -2 && s.id < 0.001) {
     pushWarn(warnings, id, "warn", "This LED is in backwards, so it stays dark. Current goes in the long leg and out the short leg.")
   }
+}
+
+export function fillSeven(p, el, id, pv, state, warnings) {
+  var names = ["a", "b", "c", "d", "e", "f", "g", "dp"]
+  var lp = ledParams("red")
+  var segs = { a: 0, b: 0, c: 0, d: 0, e: 0, f: 0, g: 0, dp: 0 }
+  var common = pv[8] || 0
+  var power = 0
+  var i0 = 0
+  var anyBurn = false
+  for (var i = 0; i < 8; i++) {
+    var sid = id + ":" + names[i]
+    if (state.burnt[sid]) {
+      anyBurn = true
+      continue
+    }
+    var vd = (pv[i] || 0) - common
+    var s = shockley(clamp(vd, -5, lp.vf + 0.45), lp.is, lp.nVt)
+    if (s.id > LED_IMAX) {
+      state.burnt[sid] = true
+      state.burnWhy[sid] = "led"
+      anyBurn = true
+      pushWarn(warnings, id, "warn", "Segment " + names[i] + " burned out from too much current. Add a resistor, then press Reset.")
+    } else {
+      var b = s.id / LED_INOM
+      if (b < 0) b = 0
+      if (b > 1) b = 1
+      segs[names[i]] = b
+      power += Math.abs(s.id * vd)
+      if (i === 0) i0 = s.id
+      if (vd < -2 && s.id < 0.001) pushWarn(warnings, id, "warn", "Segment " + names[i] + " is in backwards, so it stays dark.")
+    }
+  }
+  p.current = i0
+  p.power = power
+  p.segments = segs
+  p.burnt = anyBurn
 }
 
 export function fillRgb(p, el, id, pv, state, warnings) {

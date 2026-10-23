@@ -452,6 +452,36 @@ assert.strictEqual(stepped[0].kind, "result")
 assert.ok(elapsed < 1000, "step budget ran " + elapsed + "ms")
 assert.ok(worker.calls() < 1000000, "step budget did not stop")
 
+// --- 7-segment: eight red LEDs, common cathode on the last pin ---
+var segLit = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "ra", type: "resistor", nodes: [1, 2], props: { ohms: 470 } },
+  { id: "rb", type: "resistor", nodes: [1, 3], props: { ohms: 470 } },
+  { id: "disp", type: "sevenSeg", nodes: [2, 3, 4, 4, 4, 4, 4, 4, 0], props: {} }
+], 5)
+assert.strictEqual(segLit.ok, true)
+assert.strictEqual(segLit.converged, true)
+var segs = part(segLit, "disp").segments
+console.log("seven a", segs.a.toFixed(2), "b", segs.b.toFixed(2), "c", segs.c.toFixed(3))
+assert.ok(segs.a > 0.5 && segs.b > 0.5, "lit segments " + segs.a + " " + segs.b)
+assert.ok(segs.c < 0.05 && segs.dp < 0.05, "dark segments")
+assert.ok(!warnLevel(segLit, "info", "disp"), "sevenSeg is in the simulator")
+
+var segState = E.createState()
+var segBurn = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "disp", type: "sevenSeg", nodes: [1, 2, 2, 2, 2, 2, 2, 2, 0], props: {} }
+], 3, segState)
+assert.strictEqual(segBurn.parts.disp.segments.a, 0)
+assert.strictEqual(segBurn.parts.disp.burnt, true)
+assert.ok(warnLevel(segBurn, "warn", "disp"))
+var segDead = solve([
+  { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+  { id: "disp", type: "sevenSeg", nodes: [1, 2, 2, 2, 2, 2, 2, 2, 0], props: {} }
+], 3, segState)
+assert.strictEqual(segDead.parts.disp.segments.a, 0)
+assert.ok(Math.abs(segDead.parts.disp.current) < 0.001, "burnt segment stays open")
+
 console.log("engine tests ok")
 
 // The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.
@@ -471,6 +501,11 @@ function sameSolve(a, b, label) {
         assert.ok(near(a.parts[id][key], pb[key]), label + " " + id + " " + key + " " + pb[key])
       }
     })
+    if (a.parts[id].segments && pb.segments) {
+      ;["a", "b", "c", "d", "e", "f", "g", "dp"].forEach(function (name) {
+        assert.ok(near(a.parts[id].segments[name], pb.segments[name]), label + " seg " + name)
+      })
+    }
   })
 }
 import(pathToFileURL(path.join(__dirname, "..", "qml", "lib", "worker", "Engine.mjs")).href).then(function (mod) {
@@ -483,6 +518,12 @@ import(pathToFileURL(path.join(__dirname, "..", "qml", "lib", "worker", "Engine.
     { id: "d", type: "led", nodes: [2, 0], props: { color: "red" } }
   ], 3), mod.createState(), 0)
   sameSolve(led, again, "mjs led")
+  sameSolve(segLit, mod.solve(net([
+    { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+    { id: "ra", type: "resistor", nodes: [1, 2], props: { ohms: 470 } },
+    { id: "rb", type: "resistor", nodes: [1, 3], props: { ohms: 470 } },
+    { id: "disp", type: "sevenSeg", nodes: [2, 3, 4, 4, 4, 4, 4, 4, 0], props: {} }
+  ], 5), mod.createState(), 0), "mjs seven")
   L.lessons.forEach(function (lesson) {
     var nl = B.buildNetlist(lesson.build())
     var bare = { nodeCount: nl.nodeCount, ground: nl.ground, elements: nl.elements }
