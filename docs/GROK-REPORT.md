@@ -1,4 +1,22 @@
-# Engine report
+# Engine contract v2
+
+Done. Not pushed. The shell was not restarted. `Engine.js` stayed ES5. `Catalog.js`, `PartArt.js`, `Mcu.js`, `Lessons.js`, and QML were not edited. Every `tests/*.test.js` passed before each commit below. `python scripts/build-worker.py` regenerated `qml/lib/worker/Engine.mjs` whenever `Engine.js` changed. `EngineWorker.js` did not need a logic change. New state sits on the engine state, and `reset` calls `createState()`.
+
+| step | commit | what |
+| --- | --- | --- |
+| 1 | `e17e699` | `state.t`. `acSource` is 50 Ω, sine, square, or triangle, 1–5000 Hz. `acAdapter` is 1 Ω and the peak is `vrms·√2`. Bench ground wins. Otherwise a DC supply's minus wins, then the generator's − or the adapter's ~2. |
+| 2 | `c271279` | Scope, 10 MΩ from each channel to the GND clip. A 5 V 60 Hz sine into 1 kΩ reads vpp 9.524, freq 60.00, rms 3.353. Frequency is interpolated rising crossings. |
+| 3 | `7353db5` | Bridge plus 1000 µF on a 12 V adapter: 14.24 V, ripple 0.101 V. Schottky about 0.25 V at 10 mA. Fuse blows at 3× immediately, holds for 40 ms, blows at 60 ms. The blow text is exactly `The fuse blew: too much current. Fix the short, then press Reset.` Tilt switch, IR LED, photodiode. |
+| 4 | `3fb93ae` | Inductor current 0.0804 A at 1 ms and 0.4471 A at 8 ms (continuous 0.4628 A). Transformer, 10 V in, ratio 10, 1 kΩ on the secondary: 0.999 V. |
+| 5 | `42948b7` | Relay coil 8.78 V, LED 0.0143 A, contact on. Pull-in 3.5 V, drop-out 1.5 V. Flyback −25.1 V at dt = 5e-5, with the exact spike warning. |
+| 6 | `b8f5360` | 7805 from 9 V is 5.000 V. Battery current is Iout + 5 mA (0.010 A on 1 kΩ). 6 V in is 3.999 V, dropout, and warns that it needs at least 7 V. A 2 Ω load passes 2.381 A and warns that it will get hot. |
+| 7 | `e598973` | Op-amp follower. + input at 2 V gives 2.000 V, not saturated. At 8 V the output sits at 7.500 V, saturated. Grounded + input sits at 0.050 V, saturated. |
+| 8 | `18a869b` | 555 astable, 1 kΩ, 10 kΩ, 10 µF, measured 6.803 Hz. RESET under 0.7 V forces the output low. One flip per solve, so the lesson's DC solve does not chatter. |
+| 9 | `8797dd3` | OmaNano blinks D13 for 500 ms on and 500 ms off. Its 5 V pin into 100 Ω is 4.990 V and its 3.3 V pin is 3.267 V, same as the OmaDuino. OmaTiny blinks PB0 from a 5 V supply, same timing. A forced HIGH sources 13.1 mA out of PB0 and that current enters VCC. At 9 V it stays off, the LED stays dark, and the warning is `This OmaTiny needs between 2.7 V and 5.5 V on VCC. Above 6 V it stays off.` Two boards at once keep two different VMs. Sketch pin numbers come from `Catalog.mcuPinNumber(index, type)`. |
+
+`docs/BUGS.md` is still open and was not part of this contract. A servo signal, `tone()`, the motor driver, and the robot car still only see a board pin that sits on the same node. A closed switch or a resistor in that wire does not pass the signal.
+
+## Earlier report
 
 Built `qml/lib/Engine.js`, `qml/lib/EngineWorker.js`, and `tests/engine.test.js`. There is no `ENGINE_API.md` in the repo, so the solver follows `docs/ENGINE_CONTRACT.md` and the part table in `docs/HANDOFF-GROK.md`.
 
