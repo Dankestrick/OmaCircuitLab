@@ -450,7 +450,228 @@ var painters = {
     ctx.beginPath(); ctx.moveTo(1.2, 4.2); ctx.lineTo(3.8, 4.2); ctx.stroke()
     label(ctx, "CLAMP  A", 2.5, 5.65, 0.4, "#212121")
     ctx.fillStyle = "#212121"; ctx.beginPath(); ctx.arc(2.5, 0.3, 0.3, 0, Math.PI * 2); ctx.fill()
+  },
+  acSource: function (ctx, p, live) {
+    roundRect(ctx, -0.6, 0.4, 7.2, 5.0, 0.3)
+    ctx.fillStyle = "#37474f"; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 0.06; ctx.stroke()
+    roundRect(ctx, -0.2, 0.8, 6.4, 2.2, 0.15); ctx.fillStyle = "#0b1a10"; ctx.fill()
+    // A little picture of the wave it makes.
+    var wave = String(p.props.wave || "sine")
+    ctx.strokeStyle = "#66ff88"; ctx.lineWidth = 0.08; ctx.beginPath()
+    for (var i = 0; i <= 40; i++) {
+      var ph = i / 40 * 2, x = 0.1 + i / 40 * 2.6
+      var y = wave === "square" ? (ph % 1 < 0.5 ? 1 : -1) : wave === "triangle" ? 1 - 4 * Math.abs((ph % 1) - 0.5) : Math.sin(ph * Math.PI * 2)
+      if (i === 0) ctx.moveTo(x, 1.9 - y * 0.7); else ctx.lineTo(x, 1.9 - y * 0.7)
+    }
+    ctx.stroke()
+    var f = toNumber(p.props.freq, 60)
+    label(ctx, (f >= 1000 ? f / 1000 + " kHz" : f + " Hz"), 4.6, 1.45, 0.5, "#66ff88")
+    label(ctx, "±" + toNumber(p.props.amplitude, 5) + " V", 4.6, 2.3, 0.45, "#66ff88")
+    label(ctx, "FUNCTION GEN", 3.0, 3.8, 0.4, "#cfd8dc")
+    terminal(ctx, 1, 0, "#e53935"); terminal(ctx, 3, 0, "#1b1b1b")
+    label(ctx, "OUT", 1, -0.6, 0.38, "#e53935"); label(ctx, "COM", 3, -0.6, 0.38, INK)
+  },
+  acAdapter: function (ctx, p, live) {
+    roundRect(ctx, -0.6, 0.4, 3.2, 4.2, 0.35)
+    ctx.fillStyle = "#212121"; ctx.fill(); ctx.strokeStyle = "#616161"; ctx.lineWidth = 0.06; ctx.stroke()
+    label(ctx, toNumber(p.props.vrms, 12) + " V", 1, 1.6, 0.55, "#ffffff")
+    label(ctx, "AC ~", 1, 2.4, 0.5, "#ffca28")
+    label(ctx, "60 Hz", 1, 3.3, 0.36, "#9e9e9e")
+    terminal(ctx, 0, 0, "#ffca28"); terminal(ctx, 2, 0, "#ffca28")
+    label(ctx, "~", 0, -0.6, 0.55, "#ffca28"); label(ctx, "~", 2, -0.6, 0.55, "#ffca28")
+  },
+  transformer: function (ctx, p, live) {
+    roundRect(ctx, -0.6, 0.4, 6.2, 4.2, 0.2)
+    ctx.fillStyle = "#455a64"; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 0.06; ctx.stroke()
+    // Iron core with two coils.
+    ctx.fillStyle = "#90a4ae"; ctx.fillRect(1.9, 0.9, 1.2, 3.2)
+    ctx.strokeStyle = "#e0a050"; ctx.lineWidth = 0.14
+    for (var i = 0; i < 6; i++) {
+      ctx.beginPath(); ctx.arc(1.6, 1.3 + i * 0.5, 0.28, -Math.PI / 2, Math.PI / 2, true); ctx.stroke()
+      if (i < 3) { ctx.beginPath(); ctx.arc(3.4, 1.8 + i * 0.6, 0.28, -Math.PI / 2, Math.PI / 2); ctx.stroke() }
+    }
+    label(ctx, toNumber(p.props.ratio, 10) + ":1", 2.5, 4.1, 0.38, "#ffffff")
+    terminal(ctx, 0, 0, "#ffca28"); terminal(ctx, 1, 0, "#ffca28"); terminal(ctx, 4, 0, "#80cbc4"); terminal(ctx, 5, 0, "#80cbc4")
+    label(ctx, "PRI", 0.5, -0.65, 0.36, "#ffca28"); label(ctx, "SEC", 4.5, -0.65, 0.36, "#80cbc4")
+  },
+  oscilloscope: function (ctx, p, live, running) {
+    roundRect(ctx, -0.6, 0.4, 14.2, 10.0, 0.4)
+    ctx.fillStyle = "#263238"; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 0.08; ctx.stroke()
+    // Screen: 10 by 8 divisions, one grid unit each.
+    var sx = -0.2, sy = 1.0, W = 10, H = 8
+    ctx.fillStyle = "#06120c"; ctx.fillRect(sx, sy, W, H)
+    ctx.strokeStyle = "rgba(102,255,136,0.16)"; ctx.lineWidth = 0.03
+    for (var gx = 1; gx < W; gx++) { ctx.beginPath(); ctx.moveTo(sx + gx, sy); ctx.lineTo(sx + gx, sy + H); ctx.stroke() }
+    for (var gy = 1; gy < H; gy++) { ctx.beginPath(); ctx.moveTo(sx, sy + gy); ctx.lineTo(sx + W, sy + gy); ctx.stroke() }
+    ctx.strokeStyle = "rgba(102,255,136,0.35)"
+    ctx.beginPath(); ctx.moveTo(sx, sy + H / 2); ctx.lineTo(sx + W, sy + H / 2); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(sx + W / 2, sy); ctx.lineTo(sx + W / 2, sy + H); ctx.stroke()
+    var tdiv = toNumber(p.props.timePerDiv, 0.005), vdiv = toNumber(p.props.voltsPerDiv, 2)
+    var s = live.samples
+    if (running && s && s.t && s.t.length > 1) {
+      var t = s.t, span = tdiv * W, start = 0
+      // Auto trigger: start at the last rising crossing of CH1's middle that
+      // still leaves a full screen after it, so a steady wave stands still.
+      if (String(p.props.trigger) !== "none") {
+        var lo = Infinity, hi = -Infinity
+        for (var a = 0; a < s.ch1.length; a++) { lo = Math.min(lo, s.ch1[a]); hi = Math.max(hi, s.ch1[a]) }
+        var mid = (lo + hi) / 2, tEnd = t[t.length - 1]
+        for (var b = t.length - 2; b >= 0; b--) {
+          if (tEnd - t[b] < span) continue
+          if (s.ch1[b] < mid && s.ch1[b + 1] >= mid && hi - lo > 0.05) { start = b; break }
+        }
+        if (start === 0) for (var c = 0; c < t.length; c++) if (tEnd - t[c] <= span) { start = c; break }
+      }
+      ctx.save()
+      ctx.beginPath(); ctx.rect(sx, sy, W, H); ctx.clip()
+      var chans = [["ch1", "#ffee58"]]
+      if (p.props.ch2 === true || p.props.ch2 === "true") chans.push(["ch2", "#4dd0e1"])
+      for (var k = 0; k < chans.length; k++) {
+        var data = s[chans[k][0]]
+        if (!data) continue
+        ctx.strokeStyle = chans[k][1]; ctx.lineWidth = 0.07; ctx.beginPath()
+        var first = true
+        for (var i = start; i < t.length; i++) {
+          var x = sx + (t[i] - t[start]) / tdiv
+          if (x > sx + W) break
+          var y = sy + H / 2 - data[i] / vdiv
+          if (first) { ctx.moveTo(x, y); first = false } else ctx.lineTo(x, y)
+        }
+        ctx.stroke()
+      }
+      ctx.restore()
+    } else {
+      label(ctx, running ? "connect CH1 and GND" : "press Run", sx + W / 2, sy + H / 2 - 0.6, 0.5, "rgba(102,255,136,0.6)")
+    }
+    // Readouts on the right.
+    function fmtT(v) { return v >= 1 ? v + " s" : v >= 0.001 ? Math.round(v * 1e4) / 10 + " ms" : Math.round(v * 1e7) / 10 + " µs" }
+    label(ctx, "CH1", 11.9, 1.5, 0.42, "#ffee58")
+    label(ctx, vdiv + " V/div", 11.9, 2.2, 0.4, "#eceff1")
+    label(ctx, fmtT(tdiv) + "/div", 11.9, 2.9, 0.4, "#eceff1")
+    if (running && live.vpp1 !== undefined) {
+      label(ctx, "Vpp " + toNumber(live.vpp1, 0).toFixed(2), 11.9, 4.2, 0.4, "#ffee58")
+      var f = toNumber(live.freq1, 0)
+      label(ctx, f > 0 ? (f >= 1000 ? (f / 1000).toFixed(2) + " kHz" : f.toFixed(1) + " Hz") : "– Hz", 11.9, 4.9, 0.4, "#ffee58")
+      if (live.vrms1 !== undefined) label(ctx, "RMS " + toNumber(live.vrms1, 0).toFixed(2), 11.9, 5.6, 0.4, "#ffee58")
+    }
+    label(ctx, "OmaScope", 11.9, 9.4, 0.42, "#90a4ae")
+    terminal(ctx, 1, 0, "#ffee58"); terminal(ctx, 4, 0, "#4dd0e1"); terminal(ctx, 7, 0, "#1b1b1b")
+    label(ctx, "CH1", 1, -0.65, 0.38, "#f9a825"); label(ctx, "CH2", 4, -0.65, 0.38, "#00acc1"); label(ctx, "GND", 7, -0.65, 0.38, INK)
+  },
+  inductor: function (ctx, p) {
+    leg(ctx, 0.5, 0, 0, 0); leg(ctx, 2.5, 0, 3, 0)
+    ctx.fillStyle = "#5d4037"; roundRect(ctx, 0.45, -0.38, 2.1, 0.76, 0.3); ctx.fill()
+    ctx.strokeStyle = "#d48a3c"; ctx.lineWidth = 0.1
+    for (var i = 0; i < 6; i++) { ctx.beginPath(); ctx.moveTo(0.65 + i * 0.33, -0.36); ctx.lineTo(0.8 + i * 0.33, 0.36); ctx.stroke() }
+    label(ctx, Catalog.si(toNumber(p.props.henries, 0.01), "H"), 1.5, -0.75, 0.32, "#e0e0e0")
+  },
+  relay: function (ctx, p, live) {
+    for (var i = 0; i <= 4; i++) leg(ctx, i, -0.3, i, 0)
+    roundRect(ctx, -0.4, -2.6, 4.8, 2.3, 0.15)
+    ctx.fillStyle = "#1565c0"; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 0.05; ctx.stroke()
+    label(ctx, "RELAY 5V", 2, -2.05, 0.38, "#e3f2fd")
+    // Little switch picture: COM arm points at NO when on.
+    var on = live.on === true
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 0.08
+    ctx.beginPath(); ctx.moveTo(2, -0.65); ctx.lineTo(on ? 3 : 4, -1.35); ctx.stroke()
+    if (on) glow(ctx, 0.5, -1.2, 0.6, "#ffeb3b", 0.9)
+    label(ctx, on ? "ON" : "off", 0.5, -1.2, 0.34, on ? "#ffeb3b" : "#90caf9")
+    var names = ["+", "−", "C", "NO", "NC"]
+    for (var k = 0; k <= 4; k++) label(ctx, names[k], k, -0.55, 0.26, "#e3f2fd")
+  },
+  regulator7805: function (ctx, p, live) {
+    for (var i = 0; i <= 2; i++) leg(ctx, i, -0.3, i, 0)
+    ctx.fillStyle = "#b0bec5"; roundRect(ctx, -0.5, -2.8, 3.0, 1.0, 0.1); ctx.fill()
+    ctx.fillStyle = "#212121"; ctx.beginPath(); ctx.arc(1, -2.3, 0.28, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = "#212121"; roundRect(ctx, -0.45, -1.9, 2.9, 1.6, 0.1); ctx.fill()
+    label(ctx, "7805", 1, -1.35, 0.42, "#eeeeee")
+    label(ctx, "I G O", 1, -0.75, 0.3, "#9e9e9e")
+  },
+  timer555: function (ctx, p, live) { dip(ctx, "555", ["GND", "TR", "OUT", "RST"], ["VCC", "DIS", "THR", "CV"], live.out === 1) },
+  omaTiny: function (ctx, p, live, running) { dip(ctx, "OmaTiny", ["RST", "PB3", "PB4", "GND"], ["VCC", "PB2", "PB1", "PB0"], false, running && !live.error, live.error) },
+  opamp: function (ctx, p, live) {
+    for (var i = 0; i <= 4; i++) leg(ctx, i, -0.3, i, 0)
+    ctx.fillStyle = "#212121"; roundRect(ctx, -0.4, -1.6, 4.8, 1.3, 0.12); ctx.fill()
+    // Triangle symbol.
+    ctx.strokeStyle = "#e0e0e0"; ctx.lineWidth = 0.06
+    ctx.beginPath(); ctx.moveTo(0.4, -1.45); ctx.lineTo(0.4, -0.45); ctx.lineTo(1.3, -0.95); ctx.closePath(); ctx.stroke()
+    label(ctx, "LM358", 2.9, -0.95, 0.4, "#e0e0e0")
+    var names = ["−", "+", "V−", "V+", "OUT"]
+    for (var k = 0; k <= 4; k++) label(ctx, names[k], k, 0.5, 0.28, "#37474f")
+  },
+  schottky: function (ctx, p) { diodeBody(ctx, "#263238", "#e0e0e0"); label(ctx, "SS", 1.3, 0, 0.26, "#e0e0e0") },
+  fuse: function (ctx, p, live) {
+    leg(ctx, 0.5, 0, 0, 0); leg(ctx, 2.5, 0, 3, 0)
+    ctx.fillStyle = "rgba(220,235,245,0.55)"; roundRect(ctx, 0.45, -0.32, 2.1, 0.64, 0.25); ctx.fill()
+    ctx.strokeStyle = "#90a4ae"; ctx.lineWidth = 0.05; ctx.stroke()
+    ctx.fillStyle = "#b0bec5"; ctx.fillRect(0.45, -0.32, 0.35, 0.64); ctx.fillRect(2.2, -0.32, 0.35, 0.64)
+    ctx.strokeStyle = live.burnt ? "#3e2723" : "#cfd8dc"; ctx.lineWidth = 0.05
+    ctx.beginPath(); ctx.moveTo(0.8, 0)
+    if (live.burnt) { ctx.lineTo(1.35, 0.05); ctx.moveTo(1.65, -0.05); ctx.lineTo(2.2, 0) } else ctx.lineTo(2.2, 0)
+    ctx.stroke()
+    label(ctx, toNumber(p.props.amps, 0.5) + " A", 1.5, -0.7, 0.3, "#e0e0e0")
+    if (live.burnt) smoke(ctx, 1.5, -0.3)
+  },
+  bridgeRectifier: function (ctx, p) {
+    for (var i = 0; i <= 3; i++) leg(ctx, i, -0.3, i, 0)
+    ctx.fillStyle = "#212121"; roundRect(ctx, -0.4, -1.8, 3.8, 1.5, 0.15); ctx.fill()
+    label(ctx, "~  ~  +  −", 1.5, -0.75, 0.36, "#e0e0e0")
+    label(ctx, "BRIDGE", 1.5, -1.35, 0.32, "#9e9e9e")
+  },
+  tiltSwitch: function (ctx, p) {
+    leg(ctx, 0.5, -0.3, 0, 0); leg(ctx, 0.5, -0.3, 1, 0)
+    var t = p.props.tilted === true
+    ctx.save(); ctx.translate(0.5, -0.55); ctx.rotate(t ? 0.6 : 0)
+    ctx.fillStyle = "#212121"; roundRect(ctx, -0.32, -0.45, 0.64, 0.9, 0.2); ctx.fill()
+    ctx.fillStyle = "#cfd8dc"; ctx.beginPath(); ctx.arc(0, t ? 0.22 : -0.2, 0.16, 0, Math.PI * 2); ctx.fill()
+    ctx.restore()
+    label(ctx, t ? "tilted" : "level", 0.5, 0.55, 0.28, "#37474f")
+  },
+  irLed: function (ctx, p, live) {
+    leg(ctx, 0.5, -0.3, 0, 0); leg(ctx, 0.5, -0.3, 1, 0)
+    var b = live.burnt ? 0 : toNumber(live.brightness, 0)
+    // Invisible light: a faint purple ring hints it's on, like a phone camera sees.
+    if (b > 0.02) { ctx.strokeStyle = "rgba(186,104,200," + Math.min(0.9, 0.3 + b) + ")"; ctx.lineWidth = 0.08; ctx.beginPath(); ctx.arc(0.5, -0.45, 0.75, 0, Math.PI * 2); ctx.stroke() }
+    ctx.fillStyle = live.burnt ? "#4a4a4a" : "#9fa8da"; ctx.globalAlpha = 0.85
+    ctx.beginPath(); ctx.arc(0.5, -0.45, 0.48, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1
+    label(ctx, "IR", 0.5, -0.45, 0.32, "#1a237e")
+    if (live.burnt) smoke(ctx, 0.5, -0.4)
+  },
+  photodiode: function (ctx, p) {
+    leg(ctx, 0.5, -0.3, 0, 0); leg(ctx, 0.5, -0.3, 1, 0)
+    ctx.fillStyle = "#212121"; ctx.beginPath(); ctx.arc(0.5, -0.45, 0.48, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = "#5c6bc0"; ctx.fillRect(0.3, -0.62, 0.4, 0.34)
+    label(ctx, "PD", 0.5, 0.55, 0.28, "#37474f")
+  },
+  omaNano: function (ctx, p, live, running) {
+    // Plugs in across the center channel: pins on rows e and f.
+    roundRect(ctx, -0.5, -2.75, 11.0, 2.5, 0.2)
+    ctx.fillStyle = "#1565c0"; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 0.05; ctx.stroke()
+    var pins = Catalog.parts.omaNano.pins
+    for (var i = 0; i < pins.length; i++) {
+      ctx.fillStyle = "#d4af37"; ctx.fillRect(pins[i].x - 0.13, pins[i].y - 0.13, 0.26, 0.26)
+      label(ctx, pins[i].name.replace("GND2", "GND"), pins[i].x, pins[i].y === 0 ? -0.55 : -2.45, 0.24, "#e3f2fd")
+    }
+    ctx.fillStyle = "#b0bec5"; ctx.fillRect(-1.2, -1.95, 1.0, 0.9)
+    ctx.fillStyle = "#212121"; roundRect(ctx, 3.0, -1.95, 3.2, 0.9, 0.08); ctx.fill()
+    label(ctx, "OmaNano", 8.2, -1.5, 0.42, "#ffffff")
+    if (running) glow(ctx, 0.6, -1.5, 0.5, "#3dff5a", 1)
+    if (live.error) label(ctx, "code error", 4.6, -1.5, 0.3, "#ff8a80")
   }
+}
+
+// An 8-legged chip across the center channel: bottom row is pins 1-4 at
+// y = 0, top row pins 8-5 at y = -3, with the notch on the left.
+function dip(ctx, name, bottom, top, lit, running, error) {
+  for (var i = 0; i < 4; i++) { leg(ctx, i, -0.4, i, 0); leg(ctx, i, -2.6, i, -3) }
+  ctx.fillStyle = "#212121"; roundRect(ctx, -0.4, -2.6, 3.8, 2.2, 0.12); ctx.fill()
+  ctx.fillStyle = "#424242"; ctx.beginPath(); ctx.arc(-0.4, -1.5, 0.28, -Math.PI / 2, Math.PI / 2); ctx.fill()
+  ctx.fillStyle = "#9e9e9e"; ctx.beginPath(); ctx.arc(0.05, -0.75, 0.1, 0, Math.PI * 2); ctx.fill()
+  label(ctx, name, 1.5, -1.5, name.length > 4 ? 0.36 : 0.5, "#eeeeee")
+  for (var k = 0; k < 4; k++) { label(ctx, bottom[k], k, 0.5, 0.24, "#37474f"); label(ctx, top[k], k, -3.5, 0.24, "#37474f") }
+  if (lit) glow(ctx, 2.0, -0.7, 0.45, "#ffeb3b", 1)
+  if (running) glow(ctx, 3.0, -2.2, 0.35, "#3dff5a", 1)
+  if (error) label(ctx, "error", 1.5, -0.85, 0.26, "#ff8a80")
 }
 
 function to92(ctx, name, color) {

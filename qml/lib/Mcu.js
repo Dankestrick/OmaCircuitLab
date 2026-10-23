@@ -8,7 +8,7 @@
 // freeze anything.
 //
 //   var prog = Mcu.compile(source)      -> { ok, errors: [{ line, message }], program }
-//   var vm = Mcu.create(prog.program)
+//   var vm = Mcu.create(prog.program, profile)   profile (optional): { pins, pwm, analog, serial }
 //   vm.run(untilMicros, io)             -> advances the sketch until that time
 //   vm.pins[n] = { mode, level, pwm, servo, tone }   outputs for the engine
 //   vm.serial (text), vm.error (runtime error or "")
@@ -389,9 +389,13 @@ function coerce(type, v) {
   return v
 }
 
-function create(program) {
+// The OmaDuino's chip. Smaller boards pass their own (Catalog.mcuProfile).
+var defaultProfile = { pins: PIN_COUNT, pwm: PWM_PINS, analog: null, serial: true }
+
+function create(program, profile) {
   var vm = {
     program: program,
+    profile: profile || defaultProfile,
     time: 0,               // microseconds of sketch time
     wakeAt: 0,             // delay() sleeps until this time
     pins: [],
@@ -416,7 +420,7 @@ function create(program) {
 function resetVm(vm) {
   vm.time = 0; vm.wakeAt = 0; vm.serial = ""; vm.error = ""; vm.errorLine = 0; vm.started = false; vm.frames = []; vm.depth = 0; vm.pendOps = 0; vm.pendWait = null
   vm.pins = []
-  for (var i = 0; i < PIN_COUNT; i++) vm.pins.push({ mode: "in", level: 0, pwm: null, servo: null, tone: null })
+  for (var i = 0; i < vm.profile.pins; i++) vm.pins.push({ mode: "in", level: 0, pwm: null, servo: null, tone: null })
   vm.globals = new Scope(null)
 }
 
@@ -835,7 +839,7 @@ function method(vm, scope, node, a, cell) {
     if (callee.name === "begin" || callee.name === "flush") return 0
     if (callee.name === "print" || callee.name === "println" || callee.name === "write") {
       var text = a.length ? formatValue(a[0], a[1], node.args[0], vm, scope) : ""
-      serialWrite(vm, text + (callee.name === "println" ? "\n" : ""))
+      if (vm.profile.serial) serialWrite(vm, text + (callee.name === "println" ? "\n" : ""))
       return text.length
     }
     if (callee.name === "available") return 0
@@ -847,7 +851,7 @@ function method(vm, scope, node, a, cell) {
   if (servo && servo.servo) {
     if (callee.name === "attach") {
       need("attach", a, 1, line)
-      servo.pin = checkPin(a[0], line)
+      servo.pin = checkPin(vm, a[0], line)
       vm.pins[servo.pin].mode = "out"
       vm.pins[servo.pin].servo = servo.angle
       return 1
@@ -877,40 +881,46 @@ function builtin(vm, scope, node, v) {
   var name = node.callee.name, line = node.line, p
   switch (name) {
     case "pinMode":
-      need(name, v, 2, line); p = checkPin(v[0], line)
+      need(name, v, 2, line); p = checkPin(vm, v[0], line)
       vm.pins[p].mode = v[1] === 1 ? "out" : v[1] === 2 ? "pullup" : "in"
       if (vm.pins[p].mode !== "out") { vm.pins[p].pwm = null; vm.pins[p].level = 0 }
       return 0
     case "digitalWrite":
-      need(name, v, 2, line); p = checkPin(v[0], line)
+      need(name, v, 2, line); p = checkPin(vm, v[0], line)
       vm.pins[p].pwm = null
       vm.pins[p].tone = null
       if (vm.pins[p].mode === "out") vm.pins[p].level = v[1] ? 1 : 0
       else vm.pins[p].mode = v[1] ? "pullup" : "in"   // like the real chip: HIGH on an input turns on the pull-up
       return 0
     case "digitalRead":
-      need(name, v, 1, line); p = checkPin(v[0], line)
+      need(name, v, 1, line); p = checkPin(vm, v[0], line)
       if (vm.pins[p].mode === "out") return vm.pins[p].level
       return volts(vm, p) > 2.5 ? 1 : 0
     case "analogRead":
-      need(name, v, 1, line); p = checkPin(v[0] < 6 ? v[0] + 14 : v[0], line)
-      if (p < 14) throw new RuntimeError(line, "analogRead() works on A0–A5.")
+      need(name, v, 1, line)
+      if (vm.profile.analog) {
+        if (vm.profile.analog[v[0]] === undefined) throw new RuntimeError(line, "analogRead() works on channels 1, 2 and 3 here.")
+        p = vm.profile.analog[v[0]]
+      } else {
+        p = checkPin(vm, v[0] < 6 ? v[0] + 14 : v[0], line)
+        if (p < 14) throw new RuntimeError(line, "analogRead() works on A0–A5.")
+      }
       vm.pendOps += 100    // a real conversion takes about 100 µs
       return Math.max(0, Math.min(1023, Math.round(volts(vm, p) / 5 * 1023)))
     case "analogWrite":
-      need(name, v, 2, line); p = checkPin(v[0], line)
+      need(name, v, 2, line); p = checkPin(vm, v[0], line)
       vm.pins[p].mode = "out"
       var duty = Math.max(0, Math.min(255, Math.trunc(v[1])))
-      if (!PWM_PINS[p]) { vm.pins[p].pwm = null; vm.pins[p].level = duty >= 128 ? 1 : 0; return 0 }
+      if (!vm.profile.pwm[p]) { vm.pins[p].pwm = null; vm.pins[p].level = duty >= 128 ? 1 : 0; return 0 }
       vm.pins[p].pwm = duty
       vm.pins[p].level = duty > 0 ? 1 : 0
       return 0
     case "tone":
-      need(name, v, 2, line); p = checkPin(v[0], line)
+      need(name, v, 2, line); p = checkPin(vm, v[0], line)
       vm.pins[p].mode = "out"; vm.pins[p].tone = Math.max(31, Math.trunc(v[1])); vm.pins[p].pwm = 127
       return 0
     case "noTone":
-      need(name, v, 1, line); p = checkPin(v[0], line)
+      need(name, v, 1, line); p = checkPin(vm, v[0], line)
       vm.pins[p].tone = null; vm.pins[p].pwm = null; vm.pins[p].level = 0
       return 0
     case "delay": need(name, v, 1, line); vm.pendWait = Math.max(0, v[0]) * 1000; return 0
@@ -918,7 +928,7 @@ function builtin(vm, scope, node, v) {
     case "millis": return Math.floor(vm.time / 1000)
     case "micros": return Math.floor(vm.time)
     case "pulseIn":
-      need(name, v, 2, line); p = checkPin(v[0], line)
+      need(name, v, 2, line); p = checkPin(vm, v[0], line)
       var us = vm.io && vm.io.pulseIn ? Number(vm.io.pulseIn(p, v[1], v.length > 2 ? v[2] : 1000000)) || 0 : 0
       vm.pendWait = us > 0 ? us : (v.length > 2 ? v[2] : 1000000)
       return Math.trunc(us)
@@ -1010,9 +1020,9 @@ function arith(op, a, b, ints, line) {
   throw new RuntimeError(line, "Unknown operator " + op)
 }
 
-function checkPin(pin, line) {
+function checkPin(vm, pin, line) {
   pin = Math.trunc(pin)
-  if (!(pin >= 0 && pin < PIN_COUNT)) throw new RuntimeError(line, "Pin " + pin + " doesn't exist. OmaDuino has pins 0–13 and A0–A5.")
+  if (!(pin >= 0 && pin < vm.profile.pins)) throw new RuntimeError(line, "Pin " + pin + " doesn't exist." + (vm.profile.pins === PIN_COUNT ? " OmaDuino has pins 0–13 and A0–A5." : " This chip has pins 0–" + (vm.profile.pins - 1) + "."))
   return pin
 }
 

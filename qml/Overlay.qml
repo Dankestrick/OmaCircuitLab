@@ -217,7 +217,22 @@ Item {
   }
 
   // Parts whose state changes over time; only these need the step timer.
-  readonly property var timeTypes: ({ capacitor: true, electrolytic: true, motor: true, buzzer: true, omaduino: true, servo: true, hcsr04: true })
+  readonly property var timeTypes: ({ capacitor: true, electrolytic: true, motor: true, buzzer: true, omaduino: true, servo: true, hcsr04: true,
+                                      acSource: true, acAdapter: true, transformer: true, inductor: true, relay: true, timer555: true, oscilloscope: true,
+                                      omaNano: true, omaTiny: true, fuse: true })
+
+  // Step size: 1 ms, or finer for fast AC so each wave cycle gets about 40
+  // samples. Each tick still asks for at most 33 ms of sim time.
+  readonly property real stepDt: {
+    var _ = revision
+    var fmax = 0
+    for (var i = 0; i < bench.parts.length; i++) {
+      var p = bench.parts[i]
+      if (p.type === "acSource") fmax = Math.max(fmax, Number(p.props.freq) || 0)
+      if (p.type === "acAdapter") fmax = Math.max(fmax, Number(p.props.freq) || 60)
+    }
+    return fmax > 0 ? Math.min(0.001, 1 / (40 * fmax)) : 0.001
+  }
 
   function loadEngine() {
     netlist = Bench.buildNetlist(bench)
@@ -265,7 +280,7 @@ Item {
     onTriggered: {
       if (root.engineBusy) return
       root.engineBusy = true
-      engine.sendMessage({ cmd: "step", dt: 0.001, steps: 33 })
+      engine.sendMessage({ cmd: "step", dt: root.stepDt, steps: Math.max(1, Math.round(0.033 / root.stepDt)) })
     }
   }
 

@@ -655,11 +655,18 @@ Item {
   }
 
   // Scroll over a part changes its main value; anywhere else zooms.
-  readonly property var wheelTypes: ({ potentiometer: true, ldr: true, thermistor: true, tmp36: true, benchSupply: true, hcsr04: true, robotCar: true, resistor: true, capacitor: true, electrolytic: true, led: true, aaPack: true, zener: true })
+  readonly property var wheelTypes: ({ acSource: true, oscilloscope: true, inductor: true, photodiode: true, transformer: true, acAdapter: true, fuse: true, potentiometer: true, ldr: true, thermistor: true, tmp36: true, benchSupply: true, hcsr04: true, robotCar: true, resistor: true, capacitor: true, electrolytic: true, led: true, aaPack: true, zener: true })
   function wheelPart(part, delta) {
     var step = delta > 0 ? 1 : -1
     var pr = part.props
-    if (part.type === "potentiometer") pr.turn = Math.max(0, Math.min(1, Math.round((pr.turn + step * 0.05) * 100) / 100))
+    if (part.type === "acSource") pr.freq = stepList(Catalog.parts.acSource.editable[1].values, pr.freq, step)
+    else if (part.type === "oscilloscope") pr.timePerDiv = stepList(Catalog.parts.oscilloscope.editable[0].values, pr.timePerDiv, -step)
+    else if (part.type === "inductor") pr.henries = stepList(Catalog.parts.inductor.editable[0].values, pr.henries, step)
+    else if (part.type === "photodiode") pr.light = Math.max(0, Math.min(1, Math.round((pr.light + step * 0.05) * 100) / 100))
+    else if (part.type === "transformer") pr.ratio = stepList([1, 2, 5, 10, 20], pr.ratio, step)
+    else if (part.type === "acAdapter") pr.vrms = stepList([6, 9, 12, 24], pr.vrms, step)
+    else if (part.type === "fuse") pr.amps = stepList([0.1, 0.25, 0.5, 1, 2], pr.amps, step)
+    else if (part.type === "potentiometer") pr.turn = Math.max(0, Math.min(1, Math.round((pr.turn + step * 0.05) * 100) / 100))
     else if (part.type === "ldr") pr.light = Math.max(0, Math.min(1, Math.round((pr.light + step * 0.05) * 100) / 100))
     else if (part.type === "thermistor" || part.type === "tmp36") pr.celsius = Math.max(-20, Math.min(120, pr.celsius + step * 2))
     else if (part.type === "benchSupply") pr.volts = Math.max(0, Math.min(15, Math.round((pr.volts + step * 0.1) * 10) / 10))
@@ -918,6 +925,7 @@ Item {
         var p = view.partById(d.id)
         if (p && p.type === "pushButton" && p.props.pressed) { p.props.pressed = false; view.bump(); view.liveChanged() }
         if (d.moved) view.edited("Move part")
+        else if (p && p.type === "tiltSwitch") { p.props.tilted = !p.props.tilted; view.bump(); view.liveChanged() }
         else if (p && p.type === "slideSwitch") { p.props.position = p.props.position ? 0 : 1; view.bump(); view.liveChanged() }
         else if (p && p.type === "multimeter") {
           var modes = ["V", "A", "Ω"]

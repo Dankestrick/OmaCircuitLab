@@ -161,10 +161,10 @@ function steps(lesson) {
   for (var b = 0; b < on.length; b++) out.push(partStep(on[b], c.parts, seen))
   for (var w = 0; w < c.wires.length; w++) out.push(wireStep(c.wires[w], c.parts))
   for (var k = 0; k < c.parts.length; k++) {
-    if (c.parts[k].type !== "omaduino" || !c.parts[k].props.code) continue
+    if (!Catalog.mcuTypes[c.parts[k].type] || !c.parts[k].props.code) continue
     var title = exampleTitle(c.parts[k].props.code)
-    out.push({ group: "code", points: [], code: c.parts[k].props.code,
-               text: "Click the OmaDuino, then \"Open code editor\" in Inspect. Pick \"" + (title || "the lesson's sketch") + "\" from \"Load an example…\" and press Upload." })
+    out.push({ group: "code", points: [], code: c.parts[k].props.code, board: c.parts[k].type,
+               text: "Click the " + Catalog.parts[c.parts[k].type].name.replace(/ (board|chip).*$/, "") + ", then \"Open code editor\" in Inspect. Pick \"" + (title || "the lesson's sketch") + "\" from \"Load an example…\" and press Upload." })
   }
   out.push({ group: "run", points: [], text: "Press Run (or Space). The guide below tells you when it works." })
   return out
@@ -213,7 +213,7 @@ function progress(list, bench, netlist, running) {
     if (s.group === "parts") ok = partDone(s, bench)
     else if (s.group === "wires") ok = wireDone(s, bench, netlist)
     else if (s.group === "code") {
-      for (var k = 0; k < bench.parts.length; k++) if (bench.parts[k].type === "omaduino" && bench.parts[k].props.code === s.code) ok = true
+      for (var k = 0; k < bench.parts.length; k++) if (bench.parts[k].type === s.board && bench.parts[k].props.code === s.code) ok = true
     } else if (s.group === "run") ok = !!running
     out.push(ok)
   }

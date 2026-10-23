@@ -12,6 +12,7 @@ var categories = [
   { id: "sensors", label: "Sensors" },
   { id: "semis", label: "Diodes & transistors" },
   { id: "outputs", label: "Outputs & motion" },
+  { id: "ac", label: "AC power & signals" },
   { id: "mcu", label: "Microcontroller & robotics" },
   { id: "meters", label: "Meters" }
 ]
@@ -266,6 +267,136 @@ var parts = {
     props: { clip: null },
     editable: [],
     tip: "Reads the current through a wire or a part leg without breaking the circuit: its jaw closes around the wire and senses the magnetic field the current makes. Click the meter, then click any wire or leg to clip on. Clip it before and after a part, or on each branch, and compare."
+  },
+  acSource: {
+    name: "Function generator (AC)", category: "ac", w: 7, h: 5,
+    pins: [{ name: "+", x: 1, y: 0 }, { name: "−", x: 3, y: 0 }],
+    props: { wave: "sine", freq: 60, amplitude: 5, offset: 0 },
+    editable: [
+      { key: "wave", label: "Wave", kind: "choice", options: ["sine", "square", "triangle"], unit: "" },
+      { key: "freq", label: "Frequency", kind: "values", values: [1, 2, 5, 10, 20, 50, 60, 100, 200, 500, 1000, 2000, 5000], unit: "Hz" },
+      { key: "amplitude", label: "Amplitude (peak)", kind: "range", min: 0, max: 30, step: 0.5, unit: "V" },
+      { key: "offset", label: "DC offset", kind: "range", min: -10, max: 10, step: 0.5, unit: "V" }
+    ],
+    tip: "Makes a voltage that swings up and down: alternating current (AC). Frequency is how many times a second it repeats (Hz); amplitude is how high it swings. Watch it on the oscilloscope. Our wall outlets are a 60 Hz sine."
+  },
+  acAdapter: {
+    name: "AC adapter (12 V AC)", category: "ac", w: 3, h: 4,
+    pins: [{ name: "~1", x: 0, y: 0 }, { name: "~2", x: 2, y: 0 }],
+    props: { vrms: 12, freq: 60 },
+    editable: [{ key: "vrms", label: "Voltage (RMS)", kind: "choice", options: [6, 9, 12, 24], unit: "V" }],
+    tip: "A safe low-voltage AC supply, like the plug-in adapters for old toys. It swings to about 17 V peak, 60 times a second. Turn it into DC with a bridge rectifier and a big capacitor."
+  },
+  transformer: {
+    name: "Transformer", category: "ac", w: 6, h: 4,
+    pins: [{ name: "P1", x: 0, y: 0 }, { name: "P2", x: 1, y: 0 }, { name: "S1", x: 4, y: 0 }, { name: "S2", x: 5, y: 0 }],
+    props: { ratio: 10 },
+    editable: [{ key: "ratio", label: "Turns ratio (primary : secondary)", kind: "choice", options: [1, 2, 5, 10, 20], unit: ": 1" }],
+    tip: "Two coils on one iron core. AC in the primary (P) makes AC in the secondary (S), scaled by the turns ratio: 10:1 turns 120 V into 12 V. It only works with AC, and the two sides aren't connected by any wire."
+  },
+  oscilloscope: {
+    name: "Oscilloscope", category: "meters", w: 14, h: 10,
+    pins: [{ name: "CH1 probe", x: 1, y: 0 }, { name: "CH2 probe", x: 4, y: 0 }, { name: "GND clip", x: 7, y: 0 }],
+    props: { timePerDiv: 0.005, voltsPerDiv: 2, trigger: "auto", ch2: false },
+    editable: [
+      { key: "timePerDiv", label: "Time per division", kind: "values", values: [0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5], unit: "s" },
+      { key: "voltsPerDiv", label: "Volts per division", kind: "values", values: [0.1, 0.2, 0.5, 1, 2, 5, 10], unit: "V" },
+      { key: "ch2", label: "Show CH2", kind: "choice", options: [false, true], unit: "" },
+      { key: "trigger", label: "Trigger", kind: "choice", options: ["auto", "none"], unit: "" }
+    ],
+    tip: "Draws voltage over time, so you can see a signal's shape. Clip GND to your circuit's ground and touch the CH1 probe anywhere: a battery draws a flat line, AC draws a wave. Each grid square is one division; scroll on it to change the time scale."
+  },
+  inductor: {
+    name: "Inductor (coil)", category: "basics", w: 3, h: 1,
+    pins: [{ name: "1", x: 0, y: 0 }, { name: "2", x: 3, y: 0 }],
+    props: { henries: 0.01 },
+    editable: [{ key: "henries", label: "Inductance", kind: "values", values: [0.0001, 0.001, 0.01, 0.1, 1], unit: "H" }],
+    tip: "A coil of wire that resists changes in current: current through it rises slowly and won't stop suddenly. Used in power supplies and filters. When you cut its current, it kicks back with a voltage spike."
+  },
+  relay: {
+    name: "Relay", category: "outputs", w: 4, h: 3,
+    pins: [{ name: "coil +", x: 0, y: 0 }, { name: "coil −", x: 1, y: 0 }, { name: "COM", x: 2, y: 0 }, { name: "NO", x: 3, y: 0 }, { name: "NC", x: 4, y: 0 }],
+    props: { coilOhms: 70 },
+    editable: [],
+    tip: "A switch flipped by an electromagnet. Power the coil (about 5 V) and COM connects to NO (normally open); without power COM touches NC (normally closed). It lets a small circuit switch a completely separate one. Put a diode across the coil to catch the kickback."
+  },
+  regulator7805: {
+    name: "5 V regulator (7805)", category: "power", w: 2, h: 3,
+    pins: [{ name: "IN", x: 0, y: 0 }, { name: "GND", x: 1, y: 0 }, { name: "OUT", x: 2, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "Turns any 7–35 V into a steady 5 V for chips and sensors. IN takes the higher voltage, GND goes to ground, OUT gives 5 V. The extra voltage turns into heat, so it gets warm with big currents."
+  },
+  timer555: {
+    name: "555 timer", category: "semis", w: 4, h: 3,
+    pins: [{ name: "GND", x: 0, y: 0 }, { name: "TRIG", x: 1, y: 0 }, { name: "OUT", x: 2, y: 0 }, { name: "RESET", x: 3, y: 0 }, { name: "CTRL", x: 3, y: -3 }, { name: "THR", x: 2, y: -3 }, { name: "DIS", x: 1, y: -3 }, { name: "VCC", x: 0, y: -3 }],
+    props: {},
+    editable: [],
+    tip: "The most famous chip ever made: a timer that blinks, beeps and counts. Put it across the center channel. With two resistors and a capacitor it flips OUT on and off by itself; bigger values blink slower."
+  },
+  opamp: {
+    name: "Op-amp (LM358)", category: "semis", w: 4, h: 2,
+    pins: [{ name: "− input", x: 0, y: 0 }, { name: "+ input", x: 1, y: 0 }, { name: "V−", x: 2, y: 0 }, { name: "V+", x: 3, y: 0 }, { name: "OUT", x: 4, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "An amplifier that compares its two inputs: if + is higher than −, OUT goes high, otherwise low. With resistors feeding OUT back to − it becomes a precise amplifier. Power it from V+ and V−."
+  },
+  schottky: {
+    name: "Schottky diode (1N5819)", category: "semis", w: 3, h: 1,
+    pins: [{ name: "anode", x: 0, y: 0 }, { name: "cathode", x: 3, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "A fast diode that only loses about 0.3 V instead of 0.7 V. Great for power and for catching motor and relay kickback. The stripe is the cathode."
+  },
+  fuse: {
+    name: "Fuse", category: "power", w: 3, h: 1,
+    pins: [{ name: "1", x: 0, y: 0 }, { name: "2", x: 3, y: 0 }],
+    props: { amps: 0.5 },
+    editable: [{ key: "amps", label: "Rating", kind: "choice", options: [0.1, 0.25, 0.5, 1, 2], unit: "A" }],
+    tip: "A thin wire that melts on purpose when too much current flows, so a short can't start a fire. Put it right after the + of your supply. A blown fuse stays open until you replace it (Reset)."
+  },
+  bridgeRectifier: {
+    name: "Bridge rectifier", category: "ac", w: 3, h: 2,
+    pins: [{ name: "~ AC", x: 0, y: 0 }, { name: "~ AC", x: 1, y: 0 }, { name: "+ DC out", x: 2, y: 0 }, { name: "− DC out", x: 3, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "Four diodes in one package that flip the negative half of AC upright, so it always comes out + on the + leg. Add a big capacitor after it to smooth the bumps into steady DC."
+  },
+  tiltSwitch: {
+    name: "Tilt switch", category: "inputs", w: 1, h: 1,
+    pins: [{ name: "1", x: 0, y: 0 }, { name: "2", x: 1, y: 0 }],
+    props: { tilted: false },
+    editable: [],
+    tip: "A tiny ball inside closes the switch when it's tipped over. Click it to tilt it. Used in alarms and toys that notice being picked up."
+  },
+  irLed: {
+    name: "IR LED (infrared)", category: "outputs", w: 1, h: 1,
+    pins: [{ name: "anode (+)", x: 0, y: 0 }, { name: "cathode (−)", x: 1, y: 0 }],
+    props: {},
+    editable: [],
+    tip: "An LED whose light you can't see: infrared, like a TV remote. Phone cameras can see it. It needs a resistor like any LED and lights up a photodiode across the room."
+  },
+  photodiode: {
+    name: "Photodiode", category: "sensors", w: 1, h: 1,
+    pins: [{ name: "anode", x: 0, y: 0 }, { name: "cathode", x: 1, y: 0 }],
+    props: { light: 0.5 },
+    editable: [{ key: "light", label: "Light", kind: "range", min: 0, max: 1, step: 0.05, unit: "" }],
+    tip: "Makes a tiny current when light hits it, and sees infrared too. Wire it backwards (cathode to +) with a big resistor and the voltage across the resistor rises with light."
+  },
+  omaNano: {
+    name: "OmaNano board", category: "mcu", w: 11, h: 3,
+    pins: [{ name: "D2", x: 0, y: 0 }, { name: "D3", x: 1, y: 0 }, { name: "D4", x: 2, y: 0 }, { name: "D5", x: 3, y: 0 }, { name: "D6", x: 4, y: 0 }, { name: "D7", x: 5, y: 0 }, { name: "D8", x: 6, y: 0 }, { name: "D9", x: 7, y: 0 }, { name: "D10", x: 8, y: 0 }, { name: "D11", x: 9, y: 0 }, { name: "D12", x: 10, y: 0 },
+           { name: "D13", x: 0, y: -3 }, { name: "A0", x: 1, y: -3 }, { name: "A1", x: 2, y: -3 }, { name: "A2", x: 3, y: -3 }, { name: "A3", x: 4, y: -3 }, { name: "A4", x: 5, y: -3 }, { name: "A5", x: 6, y: -3 }, { name: "5V", x: 7, y: -3 }, { name: "3.3V", x: 8, y: -3 }, { name: "GND", x: 9, y: -3 }, { name: "GND2", x: 10, y: -3 }],
+    props: { code: "" },
+    editable: [],
+    tip: "A small version of the OmaDuino that plugs straight into the breadboard across the center channel. Same code, same pins (D2–D13, A0–A5), and its 5V and GND legs can feed the rails. Select it to write and upload code."
+  },
+  omaTiny: {
+    name: "OmaTiny chip (8-pin)", category: "mcu", w: 4, h: 3,
+    pins: [{ name: "RESET", x: 0, y: 0 }, { name: "PB3", x: 1, y: 0 }, { name: "PB4", x: 2, y: 0 }, { name: "GND", x: 3, y: 0 }, { name: "PB0", x: 3, y: -3 }, { name: "PB1", x: 2, y: -3 }, { name: "PB2", x: 1, y: -3 }, { name: "VCC", x: 0, y: -3 }],
+    props: { code: "" },
+    editable: [],
+    tip: "A whole microcontroller in one 8-legged chip, like an ATtiny85. Put it across the center channel and power it yourself: VCC to 3–5 V and GND to −. Its pins are 0–4 in code (PB0–PB4); PWM on 0, 1 and 4; analogRead(1), (2), (3) read PB2, PB4, PB3. No Serial."
   }
 }
 
@@ -367,6 +498,23 @@ var boxes = {
   motor: [-0.6, 0.4, 3.6, 4.2],
   multimeter: [-0.6, 0.4, 5.6, 6.8],
   clampMeter: [0, 0, 5, 6.2],
+  acSource: [-0.6, 0.4, 6.6, 5.4],
+  acAdapter: [-0.6, 0.4, 2.6, 4.6],
+  transformer: [-0.6, 0.4, 5.6, 4.6],
+  oscilloscope: [-0.6, 0.4, 13.6, 10.4],
+  inductor: [0, -0.45, 3, 0.45],
+  relay: [-0.4, -2.6, 4.4, 0.3],
+  regulator7805: [-0.5, -2.8, 2.5, 0.3],
+  timer555: [-0.4, -2.6, 3.4, -0.4],
+  opamp: [-0.4, -1.6, 4.4, 0.3],
+  schottky: [0, -0.35, 3, 0.35],
+  fuse: [0, -0.4, 3, 0.4],
+  bridgeRectifier: [-0.4, -1.8, 3.4, 0.3],
+  tiltSwitch: [-0.25, -1.0, 1.25, 0.3],
+  irLed: [-0.25, -1.0, 1.25, 0.3],
+  photodiode: [-0.25, -1.0, 1.25, 0.3],
+  omaNano: [-0.5, -2.6, 10.5, -0.4],
+  omaTiny: [-0.4, -2.6, 3.4, -0.4],
   omaduino: [-0.8, 0.4, 23.8, 10.0],
   servo: [-0.4, -3.4, 4.6, 0.3],
   hcsr04: [-0.8, -2.6, 3.8, 0.3],
@@ -391,22 +539,39 @@ function benchBox(part) {
 
 // Parts that sit off the breadboard with screw terminals or probe sockets.
 function isOffBoard(type) {
-  return type === "battery9v" || type === "aaPack" || type === "benchSupply" || type === "motor" || type === "multimeter" || type === "omaduino" || type === "robotCar"
+  return type === "battery9v" || type === "aaPack" || type === "benchSupply" || type === "motor" || type === "multimeter" || type === "omaduino" || type === "robotCar" ||
+    type === "acSource" || type === "acAdapter" || type === "transformer" || type === "oscilloscope"
 }
 
-// OmaDuino pin index (Catalog order) -> sketch pin number, or a power name.
-function mcuPinNumber(index) {
-  var name = parts.omaduino.pins[index].name
-  if (name === "GND") return "gnd"
+// Boards that run sketches.
+var mcuTypes = { omaduino: true, omaNano: true, omaTiny: true }
+
+// Board pin index (Catalog order) -> sketch pin number, or a power name
+// ("gnd", "5v", "3v3", "vcc", "reset"). The type defaults to the OmaDuino.
+function mcuPinNumber(index, type) {
+  var def = parts[type || "omaduino"]
+  var name = def.pins[index] ? def.pins[index].name : ""
+  if (name === "GND" || name === "GND2") return "gnd"
   if (name === "5V") return "5v"
   if (name === "3.3V") return "3v3"
+  if (name === "VCC") return "vcc"
+  if (name === "RESET") return "reset"
+  if (name.indexOf("PB") === 0) return Number(name.substring(2))
   if (name.charAt(0) === "A") return 14 + Number(name.substring(1))
   return Number(name.substring(1))
 }
 
+// What each board's chip can do, for Mcu.create.
+function mcuProfile(type) {
+  if (type === "omaTiny") return { pins: 5, pwm: { 0: true, 1: true, 4: true }, analog: { 1: 2, 2: 4, 3: 3 }, serial: false }
+  return { pins: 20, pwm: { 3: true, 5: true, 6: true, 9: true, 10: true, 11: true }, analog: null, serial: true }
+}
+
 // The pin that grounds the netlist, for parts that can power a circuit.
 function groundPin(type) {
+  if (type === "regulator7805" || type === "fuse") return -1
   if (parts[type].category === "power") return 1
+  if (type === "acSource" || type === "acAdapter") return 1
   if (type === "omaduino") return 0
   return -1
 }

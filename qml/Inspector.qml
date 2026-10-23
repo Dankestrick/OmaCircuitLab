@@ -83,7 +83,7 @@ Flickable {
         onClicked: root.openArena()
       }
       Button {
-        visible: root.part !== null && root.part.type === "omaduino"
+        visible: root.part !== null && Catalog.mcuTypes[root.part.type] === true
         text: "</>  Open code editor"
         bordered: true
         foreground: root.theme.fg
@@ -91,7 +91,7 @@ Flickable {
         onClicked: root.openCode(root.part.id)
       }
       Text {
-        visible: root.part !== null && root.part.type === "omaduino"
+        visible: root.part !== null && Catalog.mcuTypes[root.part.type] === true
         Layout.fillWidth: true
         wrapMode: Text.WordWrap
         text: root.live && root.live.serial ? "Serial: " + root.live.serial.split("\n").filter(function (l) { return l !== "" }).slice(-1)[0] : ""
