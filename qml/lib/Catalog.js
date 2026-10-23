@@ -324,7 +324,7 @@ function si(value, unit) {
     if (a >= prefixes[i][0] * 0.9995) {
       var v = value / prefixes[i][0]
       var s = Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2)
-      s = s.replace(/\.?0+$/, "")
+      if (s.indexOf(".") >= 0) s = s.replace(/\.?0+$/, "")   // 4.70 -> 4.7, but 470 stays 470
       return s + " " + prefixes[i][1] + unit
     }
   }

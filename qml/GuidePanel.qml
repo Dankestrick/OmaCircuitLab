@@ -15,9 +15,20 @@ Flickable {
   property var lessons: []
   property int index: 0
   property var status: ({ done: false, hint: "" })
+  property var steps: []          // Guide.steps(lesson)
+  property var done: []           // Guide.progress(...)
+  property var tryIt: []          // what to do once it runs
+  property int hovered: -1
 
   signal pick(int i)
   signal build()
+  signal preview(int step)        // -1 when the pointer leaves the steps
+
+  readonly property int doneCount: done.filter(function (d) { return d }).length
+  readonly property int currentStep: {
+    for (var i = 0; i < done.length; i++) if (!done[i]) return i
+    return -1
+  }
 
   readonly property var lesson: lessons[index] || null
 
@@ -57,35 +68,143 @@ Flickable {
       lineHeight: 1.15
     }
 
+    // The short plan, then every step spelled out.
     Text {
-      text: "Steps"
+      Layout.fillWidth: true
+      visible: root.lesson !== null && root.lesson.steps.length > 0 && root.tryIt.length === 0
+      text: root.lesson ? "In short: " + root.lesson.steps.join(" ") : ""
+      wrapMode: Text.WordWrap
       color: root.theme.muted
       font.family: root.theme.fontFamily
       font.pixelSize: root.theme.fCaption
+    }
+
+    RowLayout {
+      Layout.fillWidth: true
+      Layout.topMargin: Style.spacing.sm
+      Text {
+        text: "Step by step"
+        color: root.theme.fg
+        font.family: root.theme.fontFamily
+        font.pixelSize: root.theme.fBody
+        font.bold: true
+      }
+      Item { Layout.fillWidth: true }
+      Text {
+        text: root.doneCount + " of " + root.steps.length + " done"
+        color: root.doneCount === root.steps.length && root.steps.length > 0 ? "#66bb6a" : root.theme.muted
+        font.family: root.theme.fontFamily
+        font.pixelSize: root.theme.fCaption
+        font.bold: true
+      }
+    }
+
+    // Progress bar.
+    Rectangle {
+      Layout.fillWidth: true
+      Layout.preferredHeight: 4
+      radius: 2
+      color: Qt.rgba(root.theme.fg.r, root.theme.fg.g, root.theme.fg.b, 0.12)
+      Rectangle {
+        width: root.steps.length ? parent.width * root.doneCount / root.steps.length : 0
+        height: parent.height
+        radius: 2
+        color: "#66bb6a"
+      }
+    }
+
+    Text {
+      Layout.fillWidth: true
+      text: "Point at a step to see where it goes on the bench. Steps tick themselves off as you build."
+      wrapMode: Text.WordWrap
+      color: root.theme.muted
+      font.family: root.theme.fontFamily
+      font.pixelSize: root.theme.fCaption
+    }
+
+    Repeater {
+      model: root.steps
+      delegate: Rectangle {
+        id: stepRow
+        required property var modelData
+        required property int index
+        readonly property bool isDone: root.done[index] === true
+        readonly property bool isCurrent: index === root.currentStep
+        Layout.fillWidth: true
+        implicitHeight: stepLine.implicitHeight + Style.spacing.sm * 2
+        radius: Style.cornerRadius
+        color: isCurrent ? Qt.rgba(root.theme.accent.r, root.theme.accent.g, root.theme.accent.b, 0.16)
+          : stepMouse.containsMouse ? Qt.rgba(root.theme.fg.r, root.theme.fg.g, root.theme.fg.b, 0.06) : "transparent"
+        border.color: isCurrent ? root.theme.accent : "transparent"
+        border.width: 1
+
+        RowLayout {
+          id: stepLine
+          anchors.left: parent.left; anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.margins: Style.spacing.sm
+          spacing: Style.spacing.md
+          Rectangle {
+            Layout.alignment: Qt.AlignTop
+            Layout.preferredWidth: root.theme.fBody * 1.6
+            Layout.preferredHeight: root.theme.fBody * 1.6
+            radius: width / 2
+            color: stepRow.isDone ? "#2e7d32" : stepRow.isCurrent ? root.theme.accent : "transparent"
+            border.color: stepRow.isDone ? "#66bb6a" : root.theme.accent
+            border.width: 1
+            Text {
+              anchors.centerIn: parent
+              text: stepRow.isDone ? "✓" : String(stepRow.index + 1)
+              color: stepRow.isDone || stepRow.isCurrent ? "#ffffff" : root.theme.fg
+              font.family: root.theme.fontFamily
+              font.pixelSize: root.theme.fCaption
+              font.bold: true
+            }
+          }
+          Text {
+            Layout.fillWidth: true
+            text: stepRow.modelData.text
+            wrapMode: Text.WordWrap
+            color: root.theme.fg
+            opacity: stepRow.isDone ? 0.55 : 1
+            font.family: root.theme.fontFamily
+            font.pixelSize: root.theme.fSmall
+            font.bold: stepRow.isCurrent
+          }
+        }
+        MouseArea {
+          id: stepMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          onContainsMouseChanged: root.preview(containsMouse ? stepRow.index : -1)
+        }
+      }
+    }
+
+    Text {
+      visible: root.tryIt.length > 0
+      Layout.topMargin: Style.spacing.md
+      text: "Try it"
+      color: root.theme.fg
+      font.family: root.theme.fontFamily
+      font.pixelSize: root.theme.fBody
       font.bold: true
     }
 
     Repeater {
-      model: root.lesson ? root.lesson.steps : []
+      model: root.tryIt
       delegate: RowLayout {
         required property var modelData
         required property int index
         Layout.fillWidth: true
         spacing: Style.spacing.md
-        Rectangle {
+        Text {
           Layout.alignment: Qt.AlignTop
-          Layout.preferredWidth: root.theme.fBody * 1.6
-          Layout.preferredHeight: root.theme.fBody * 1.6
-          radius: width / 2
+          text: "▸"
           color: root.theme.accent
-          Text {
-            anchors.centerIn: parent
-            text: String(index + 1)
-            color: root.theme.textOn(root.theme.accent)
-            font.family: root.theme.fontFamily
-            font.pixelSize: root.theme.fCaption
-            font.bold: true
-          }
+          font.family: root.theme.fontFamily
+          font.pixelSize: root.theme.fSmall
+          font.bold: true
         }
         Text {
           Layout.fillWidth: true

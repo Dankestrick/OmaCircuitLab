@@ -17,6 +17,7 @@ Item {
   property var netlist: null
   property bool running: false
   property var motorAngles: ({})
+  property var guideMarks: []          // holes the Guide's current step uses
 
   property string placingType: ""
   property int placingRot: 0
@@ -363,6 +364,23 @@ Item {
       }
     }
 
+    // Where the Guide's step goes: pulsing green rings.
+    Repeater {
+      model: view.guideMarks
+      delegate: Rectangle {
+        required property var modelData
+        x: (modelData.x - 0.55) * view.cell
+        y: (modelData.y - 0.55) * view.cell
+        width: 1.1 * view.cell
+        height: width
+        radius: width / 2
+        color: Qt.rgba(0.4, 0.73, 0.42, 0.18)
+        border.color: "#66bb6a"
+        border.width: Math.max(2, view.cell * 0.14)
+        opacity: view.markPulse
+      }
+    }
+
     // Connected holes under the cursor.
     Repeater {
       model: view.hoverStrip
@@ -562,6 +580,14 @@ Item {
   }
 
   property var ghostPos: null
+
+  property real markPulse: 1
+  SequentialAnimation on markPulse {
+    running: view.guideMarks.length > 0 && view.visible
+    loops: Animation.Infinite
+    NumberAnimation { to: 0.35; duration: 600; easing.type: Easing.InOutSine }
+    NumberAnimation { to: 1; duration: 600; easing.type: Easing.InOutSine }
+  }
 
   function warningFor(id) {
     if (!running || !result || !result.warnings) return ""

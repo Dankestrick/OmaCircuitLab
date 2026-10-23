@@ -9,6 +9,7 @@ import "lib/Catalog.js" as Catalog
 import "lib/Bench.js" as Bench
 import "lib/Clamp.js" as Clamp
 import "lib/Lessons.js" as Lessons
+import "lib/Guide.js" as Guide
 import "lib/Arena.js" as Arena
 
 // The OmaCircuitLab window. Opened from the app menu (omarchy-shell shell
@@ -511,6 +512,19 @@ Item {
 
   // ------------------------------------------------------------------ guide
   readonly property var lesson: Lessons.lessons[lessonIndex]
+  readonly property var guideSteps: Guide.steps(lesson)
+  readonly property var guideDone: {
+    var _ = revision
+    return Guide.progress(guideSteps, bench, netlist, running)
+  }
+  property int guidePreview: -1
+  // Holes to light up: the step under the pointer, else the next step to do.
+  readonly property var guideMarks: {
+    var _ = revision
+    if (rightTab !== "guide") return []
+    var i = guidePreview >= 0 ? guidePreview : Guide.current(guideDone)
+    return i >= 0 ? Guide.marks(guideSteps[i], bench) : []
+  }
   readonly property var lessonStatus: {
     var _ = revision
     if (!lesson) return { done: false, hint: "" }
@@ -830,6 +844,7 @@ Item {
               netlist: root.netlist
               running: root.running
               motorAngles: root.motorAngles
+              guideMarks: root.guideMarks
               benchColor: root.matBg
               fontFamily: root.fontFamily
               Component.onCompleted: wireColor = root.wireColor
@@ -1065,6 +1080,9 @@ Item {
                 lessons: Lessons.lessons
                 index: root.lessonIndex
                 status: root.lessonStatus
+                steps: root.guideSteps
+                done: root.guideDone
+                onPreview: function (i) { root.guidePreview = i }
                 onPick: function (i) { root.lessonIndex = i }
                 onBuild: {
                   root.setBench(root.lesson.build(), "Build lesson")
