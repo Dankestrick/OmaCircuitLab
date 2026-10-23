@@ -1,119 +1,50 @@
-# OmaCircuitLab: handoff for 2026-10-22 (Claude + Grok)
+# OmaCircuitLab: handoff for 2026-10-23 (Claude)
 
-Read this first, both of you. It covers where things stand at the end of 2026-10-21 and what to do next.
+Read this and `docs/HANDOFF-GROK-TOMORROW.md` (Grok's), then `docs/BUGS.md`. Dank spent the evening building circuits and finding bugs; keep doing that loop with him.
 
-## What it is
+## Rules (all sessions)
 
-A breadboard circuit simulator and electronics learning tool. It's an Omarchy shell plugin (`io.github.dankestrick.omacircuitlab`, kind `overlay`, no bar icon) opened from the app menu.
+- **No AI attribution in any commit or PR, in any repo.** No Co-Authored-By, no "Generated with". This is now in `~/.claude/CLAUDE.md`.
+- Never message Grok while it's working (queued prompts don't send). Check `herdr agent get gd-grok` for idle, review its work, then send one complete message. At about 165K context, have it write a handoff.
+- Grok owns `Engine.js`, `EngineWorker.js`, `tests/engine.test.js`, `TryIt.js`. Claude owns QML, `Catalog.js`, `PartArt.js`, `Bench.js`, `Lessons.js`, `Guide.js`, `Clamp.js`, `Mcu.js`. Specs go in `docs/ENGINE_CONTRACT*.md`.
+- **After `omarchy restart shell`, always reopen the app** (`omarchy-shell shell summon io.github.dankestrick.omacircuitlab '{}'`). Dank called this out.
+- When Grok has uncommitted engine edits, install from the committed tree so the app never gets a half-finished engine: `git archive HEAD | tar -x -C <scratch>` and run that copy's `scripts/dev-install.sh`.
+- Building a lesson with `summon {"lesson":N,"build":true}` replaces Dank's bench. Back up `~/.local/share/omacircuitlab.json` first, then restart the shell, copy it back, and reopen.
+- Screenshot: window geometry from `hyprctl clients -j` (title `OmaCircuitLab`), then `grim -g`. Only keyboard input can be simulated; Dank does the mouse. Don't move his cursor.
+- GitHub `Dankestrick/OmaCircuitLab` exists. Local is **24+ commits ahead and not pushed**. Ask Dank before pushing.
 
-- Source: `/home/dank/GitDank/OmaCircuitLab`, a git repo (branch master). Commit after each working step. No GitHub remote yet.
-- Installed copy: `~/.config/omarchy/plugins/io.github.dankestrick.omacircuitlab`.
-- Plan: `PLAN.md`. Engine specs: `docs/ENGINE_CONTRACT.md` and `docs/ENGINE_CONTRACT_MCU.md`.
+## State
 
-## Dank's rules for working together
+Everything works in the shell and all 12 test files pass (`for t in tests/*.test.js; do node $t; done`).
 
-- Never message Grok while it's working: queued prompts don't send themselves. Wait for idle, check its work, then send one complete message.
-- When Grok passes about 65% context (166K of 256K) and is idle, have it write a handoff, then `/new` and point it at the handoff.
-- Keep the load on the PC light. The app must stay easy to see on dark, see-through themes. It must work well inside Omarchy.
-- Dank wants it "fuckin awesome": lots of learning features, everything tested.
+- **46 parts**, including AC power & signals (function generator, AC adapter, transformer, bridge rectifier), an oscilloscope, inductor, relay, 7805, 555, op-amp, Schottky, fuse, tilt switch, IR LED, photodiode, OmaNano, and OmaTiny.
+- **31 lessons**. Lessons 25–31 are new: AC on a scope, AC to DC, 555 blinker, relay, 7805, OmaNano, and OmaTiny. All 31 checks pass against the engine. 25–27 were also checked in the app by screenshot (scope reads Vpp 9.52 / 60 Hz; rectifier 14.24 V with 0.10 V ripple).
+- **Guide**: step-by-step steps are generated from each lesson's `build()` (`qml/lib/Guide.js`): exact holes, which leg goes where, and wire ends. Steps tick off as the bench matches, the next step's holes pulse green, and Grok's "Try it" steps (`TryIt.js`) follow.
+- **Up to 3 breadboards** (`bench.boards`, − / + in the left panel). Boards 2 and 3 sit to the right with their own strips, named `b2:` and `b3:`.
+- **Clamp meter**: a separate meter with a lead and a jaw that clips onto any wire or leg. Wire currents are solved in `Clamp.js` from part leg currents.
+- **Buzzer**: animated rings, a BZZZ tag, and real sound behind the "♪ Sound" toolbar toggle (off by default). It uses QtMultimedia `SoundEffect` in `SoundPlayer.qml`, loaded only while sound is on.
+- **Hover** notes live in the left panel. The V= A= W= numbers show in a small strip at the bench's bottom left.
 
-## How to test in the shell (important)
+## Today's important fixes (know why)
 
-The shell caches plugin QML in memory. Saved edits do NOT reload, and `rescanPlugins` is not enough. After editing:
+- **Shell crashes on any sketch**: Qt's JS engine segfaults on nested `yield*`. `Mcu.js` now compiles functions to flat steps run on an explicit stack (no generators). A trace compare against the old interpreter matched to the microsecond. Don't reintroduce generators anywhere that runs in the shell.
+- **Robot spun in circles**: the arena now moves by `result.simTime` (sim seconds per step reply), not wall time.
+- **Stale replies after Reset/Stop** are dropped (`staleReplies` in `Overlay.qml`). Run and any edit made while something is burnt reset the engine, so the parts come back fresh.
+- `Catalog.si` was dropping zeros from whole numbers (470 Ω showed as "47 Ω").
+- `PartView` wrote the motor spin into `live.angle` and froze the servo arm. The spin is now `live.spinAngle`.
 
-```
-cd ~/GitDank/OmaCircuitLab && ./scripts/dev-install.sh && omarchy restart shell
-omarchy-shell shell summon io.github.dankestrick.omacircuitlab '{"lesson":1,"build":true}'   # optional "run": true
-```
+## Next steps
 
-- Screenshot it with `grim -g "<x>,<y> <w>x<h>"`, using the geometry from `hyprctl clients -j` (title `OmaCircuitLab`).
-- Logs: `qs log -p /usr/share/omarchy/shell --tail 80 | grep -i omacircuit`.
-- Only keyboard input can be simulated here (`wtype`). Dank does the mouse testing.
-- Node tests, which run without the shell: `for t in tests/*.test.js; do node $t; done`.
+1. Check Grok's fix for the open bug: a servo, tone(), motor driver, or robot car driven *through* a pressed button, switch, relay, or small resistor. Test it in the app with Dank's button→servo circuit (D9 → pushButton → servo signal).
+2. Let Dank keep building and log everything in `docs/BUGS.md`. Mouse paths I haven't tested: clamp clipping, board +/−, the scope's scroll-to-change time/div, the tilt switch click, and the code editor on OmaNano/OmaTiny.
+3. Ideas not done yet: current-flow dots on wires (Clamp.js now gives every wire's current, so this is feasible); a proximity link from IR LED to photodiode; schematic symbols in Inspect (ask Dank first); CPU measurement on the robot and scope lessons.
+4. Marketplace prep: `omarchy-plugin-review` skill, `preview.png`, README screenshots, and push to GitHub when Dank says.
 
-## Done and working (Claude, all in the shell)
+## Where things live
 
-- **Window:**
-  - Large centered window with a parts picker, the bench, and Inspect / Guide / Tools tabs.
-  - Solid / Theme / Custom opacity, using Hyprland `hl.dsp.window.set_prop` (`opacity`, `opacity_inactive`, `opacity_override`). Measured: no wallpaper bleed-through in Solid.
-- **Breadboard and wires:**
-  - Full-size breadboard: rails, a–j strips, center channel.
-  - Square wire routing in the lanes between holes. Wires dodge each other and part bodies.
-  - **Hand-shaped wires:** drag a run (blue bar) or a bend (white square). Auto-route resets the shape. The shape is saved in `wire.path`.
-- **Parts:** 28 types in `qml/lib/Catalog.js` with drawings in `PartArt.js`. That includes the OmaDuino board, servo, HC-SR04, 7-segment display, motor driver and robot car.
-- **Changing values:** clicking a part opens Inspect, which has dropdowns and sliders. Scrolling on a part changes its main value (resistor E12 values, LED color, capacitance, knob, sensors, supply voltage). Resistors show their value printed on the bench.
-- **Learning:**
-  - 23 lessons in `Lessons.js`, auto-numbered. Each has "Build it for me" and a live check.
-  - Tools tab (`Learn.js`): Ohm's law, LED resistor, color code, divider, series/parallel, RC timing and a glossary.
-  - Inspect shows "How it's connected": every connection point with its legs and voltage.
-- **Programming:**
-  - OmaDuino interpreter in `Mcu.js`: Arduino C subset, no eval, step budget. Covers setup/loop, functions, arrays, for/while/switch, Servo, Serial, analogRead/Write, tone, pulseIn and millis.
-  - 11 examples. Code editor overlay with line numbers, Upload, friendly errors and a Serial Monitor (`CodeEditor.qml`).
-- **Robot arena:** `Arena.js` and `RobotArena.qml` with physics, walls, sonar raycast and 4 room layouts. While running it sends `{cmd:"setProp", id, key:"distance"}` to the worker.
-- **Saving and launching:**
-  - Autosave to `~/.local/share/omacircuitlab.json`.
-  - "My circuits" saves named projects to `~/.local/share/omacircuitlab-projects.json`.
-  - Undo/redo.
-  - On first open the app writes its own app-menu entry to `~/.local/share/applications/omacircuitlab.desktop`.
-- **Light on the PC:** nothing loads while the window is closed. Time-stepping only runs for circuits that need it, and only while the window is shown and running. The wire canvas is the size of the view.
-
-## Grok's engine (written before Grok finished; see "Grok's result" below for the final status)
-
-- `qml/lib/Engine.js` exists (40 KB, MNA + Newton). Claude ran it in Node: **14 of the 16 basic lessons pass their checks**. The other two (lesson 3, temperature alarm) need user action. LED current and brightness, the meter, NPN, MOSFET, zener, RC and motor are all right.
-- **Still missing:**
-  - `qml/lib/EngineWorker.js`. Without it, **Run does nothing in the app**, so Dank hasn't seen an LED light yet. This is the top priority.
-  - `tests/engine.test.js` and `docs/GROK-REPORT.md`.
-  - The board and robotics coupling in `docs/ENGINE_CONTRACT_MCU.md`: OmaDuino pins driving and reading the circuit, servo, hcsr04 pulseIn, sevenSeg, motorDriver, robotCar, and the `setProp` worker command. Lessons 17–23 depend on it.
-- Grok ended the night at 182K context, still working. Next session: if it's idle, ask for its handoff, `/new`, and point the fresh session at its handoff plus this file.
-
-## Found at the end of the night: the worker can't load the engine
-
-Grok's `EngineWorker.js` exists, but in the shell it fails with `ReferenceError: Engine is not defined`.
-
-- **Cause (tested in a standalone `qml` app):** WorkerScript ignores `.import "X.js" as X`. ES modules work: a `.mjs` worker with `import * as A from "./A.mjs"` (and nested imports) ran fine.
-- **Fix:** add `scripts/build-worker.py`, which writes `qml/lib/worker/Catalog.mjs`, `Engine.mjs` and `Mcu.mjs` from the `.pragma library` files:
-  - Strip `.pragma`.
-  - Turn `.import "X.js" as X` into `import * as X from "./X.mjs"`.
-  - `export` every top-level function and var.
-- Then make the worker `qml/lib/worker/EngineWorker.mjs` (`import * as Engine from "./Engine.mjs"`) and point `Overlay.qml`'s `WorkerScript.source` at it.
-- Commit the generated files (marketplace installs run no build step) and have `dev-install.sh` regenerate them.
-- Keep the `.js` versions as the source of truth: the QML UI and the Node tests use them.
-- Grok's `tests/engine.test.js` (19 KB) was failing one assertion while Grok was still mid-task. Check `docs/GROK-REPORT.md` for its status.
-
-## Grok's result (finished 00:08)
-
-- `docs/GROK-REPORT.md` says `node tests/engine.test.js` passes; Claude confirmed. Every lesson build solves and converges.
-- The board parts (`omaduino`, `servo`, `hcsr04`, `sevenSeg`, `motorDriver`, `robotCar`) are left open with an info warning: that's the next engine task (`ENGINE_CONTRACT_MCU.md`).
-- UI notes from Grok for Claude:
-  - `resetSim` in Overlay sets `engineBusy = false` and sends `load` right away, so a step reply already in flight can flash the old result. Make reset wait for the next reply.
-  - PNP and supply currents can be negative. Use `Math.abs` wherever the UI shows current; the Inspector already does.
-  - Capacitors jump to their DC value on a fresh load. For a visible charge animation, step from the last capacitor voltage when a switch closes.
-- Grok's own handoff: `docs/HANDOFF-GROK-TOMORROW.md`.
-
-## Next steps, in order
-
-1. **Make Run work in the shell.** The `.mjs` build is in the tree as of 2026-10-22 (`scripts/build-worker.py`, `qml/lib/worker/*.mjs`, `WorkerScript.source` is `lib/worker/EngineWorker.mjs`). What is left of this step is the shell check below. Grok's handoff (`docs/HANDOFF-GROK-TOMORROW.md`, "Tomorrow's first job") has the exact steps:
-   - Generate only Catalog, Engine and EngineWorker; leave `Mcu` out until the board task. Done.
-   - If `.mjs` fails inside Quickshell, fall back to one generated classic script. The standalone `qml6` worker succeeded, so this waits on the shell check.
-   - `WorkerScript.source` is already `lib/worker/EngineWorker.mjs`. `resetSim` already drops an in-flight reply.
-2. **Claude:** install, restart the shell, open lesson 1 with `"run": true`, screenshot. Confirm the LEDs glow, the warnings show, and a burnt LED smokes (try a 10 Ω resistor). Have Dank try it.
-3. **Grok:** the board coupling from `ENGINE_CONTRACT_MCU.md`, one part at a time in the order in Grok's handoff (sevenSeg → omaduino pins → step order → hcsr04 → servo → motorDriver/robotCar/setProp). **Claude:** test lessons 17–23 in the app, including the robot arena.
-4. **Claude:** schematic symbols in Inspect. Dank stopped this mid-write; confirm he still wants it before doing it.
-5. Measure CPU in the shell while running (blink and robot lessons) and tune `Mcu.STEP_BUDGET` and the step timer if needed.
-6. Marketplace prep: `omarchy-plugin-review` skill, GitHub repo `Dankestrick/OmaCircuitLab`, `preview.png`, README screenshots.
-
-## Known gaps and ideas
-
-- Current-flow animation (dots moving along wires) isn't done. Wires are ideal, so the engine would need branch currents per wire.
-- Mouse interactions are untested by Claude: place, drag, wire, bend drag, button hold, scroll. Ask Dank what feels off.
-- The slider in Inspect pushes undo steps through a 400 ms timer; check that it feels right.
-- "OmaCircuit" is taken on the marketplace (labrat-0's puzzle game), so the name stays OmaCircuitLab.
-
-## 2026-10-22 evening (Claude)
-
-- Run lights LEDs in the shell (lesson 1 checked by screenshot). Dank likes the glow.
-- **Clamp meter** (`clampMeter`, Meters, commit e223a8d): a separate meter with a lead to a jaw that clips on any wire or part leg. It never enters the engine (Overlay filters it out of `load`). `qml/lib/Clamp.js` reads it after each solve: legs from `pinCurrents`, wires by solving the node's wire network from the part currents. Tests: `tests/clamp.test.js`.
-- **For Grok:** multi-pin parts (pot, slide switch, BJT, MOSFET, TMP36, RGB LED, seven-seg, OmaDuino, servo, HC-SR04, motor driver, robot car) need `pinCurrents: [amps into each pin]` in their result, or the clamp says "doesn't report its leg currents yet" on those legs and on wires in their nodes. Two-pin parts already work from `current`.
-- **Lessons moved:** the new lesson 12 ("Follow the current with a clamp meter") comes after "Two LEDs in parallel". The board lessons are now 18–24, not 17–23.
-- Run now resets the engine first (fresh parts, empty caps). An edit while a part is burnt resets too, so fixing the resistor brings the LED back.
-- Scrolling steps one value per wheel notch. Smooth-scroll mice had been skipping values such as 470 Ω.
+- `qml/Overlay.qml`: window, engine messaging (`loadEngine`, `stepDt` picks finer steps for fast AC), Guide wiring, sound.
+- `qml/BenchView.qml`: drawing and every mouse interaction (clamp clipping is `clipping`/`clipTarget`), wheel steps per notch (`wheelAcc`).
+- `qml/lib/Bench.js`: board geometry (`setBoards`, `holeAt`, `boardOrigin`) and the netlist.
+- `qml/lib/Catalog.js`: parts, boxes, `mcuPinNumber(index, type)`, `mcuProfile(type)`, and `groundPin`.
+- `qml/lib/Mcu.js`: sketch compiler and step machine. `Mcu.create(program, profile)`.
+- `scripts/build-worker.py`: regenerates `qml/lib/worker/*.mjs` (committed, since the marketplace has no build step).
