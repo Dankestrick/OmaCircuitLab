@@ -155,8 +155,10 @@ Item {
   // that change over time, and only while the window is open and running.
   WorkerScript {
     id: engine
-    source: "lib/EngineWorker.js"
+    source: "lib/worker/EngineWorker.mjs"
     onMessage: function (msg) {
+      // A reply to a request sent before Reset/Stop would flash the old result.
+      if (root.staleReplies > 0) { root.staleReplies--; return }
       root.engineBusy = false
       if (!msg || msg.kind !== "result") return
       root.result = msg.result
@@ -164,6 +166,14 @@ Item {
     }
   }
   property bool pendingLoad: false
+  property int staleReplies: 0
+
+  // Forget the request in flight: its reply is dropped when it arrives.
+  function dropInFlight() {
+    if (engineBusy) staleReplies++
+    engineBusy = false
+    pendingLoad = false
+  }
 
   // Parts whose state changes over time; only these need the step timer.
   readonly property var timeTypes: ({ capacitor: true, electrolytic: true, motor: true, buzzer: true, omaduino: true, servo: true, hcsr04: true })
@@ -185,12 +195,13 @@ Item {
   }
   function stopSim() {
     running = false
+    dropInFlight()
     result = null
     motorAngles = ({})
   }
   function resetSim() {
     engine.sendMessage({ cmd: "reset" })
-    engineBusy = false
+    dropInFlight()
     if (running) loadEngine()
   }
 

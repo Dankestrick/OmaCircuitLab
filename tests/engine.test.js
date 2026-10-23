@@ -453,3 +453,43 @@ assert.ok(elapsed < 1000, "step budget ran " + elapsed + "ms")
 assert.ok(worker.calls() < 1000000, "step budget did not stop")
 
 console.log("engine tests ok")
+
+// The .mjs copies are what WorkerScript runs (strict mode). The vm above is sloppy.
+const { pathToFileURL } = require("url")
+function near(a, b) {
+  if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) < 1e-9
+  return false
+}
+function sameSolve(a, b, label) {
+  assert.strictEqual(b.ok, a.ok, label + " ok")
+  assert.strictEqual(b.converged, a.converged, label + " converged")
+  Object.keys(a.parts || {}).forEach(function (id) {
+    var pb = b.parts && b.parts[id]
+    assert.ok(pb, label + " missing " + id)
+    ;["current", "brightness", "spin", "volts"].forEach(function (key) {
+      if (typeof a.parts[id][key] === "number") {
+        assert.ok(near(a.parts[id][key], pb[key]), label + " " + id + " " + key + " " + pb[key])
+      }
+    })
+  })
+}
+import(pathToFileURL(path.join(__dirname, "..", "qml", "lib", "worker", "Engine.mjs")).href).then(function (mod) {
+  assert.strictEqual(typeof mod.solve, "function")
+  assert.strictEqual(typeof mod.createState, "function")
+  assert.strictEqual(typeof mod.isTimeDependent, "function")
+  var again = mod.solve(net([
+    { id: "bat", type: "battery9v", nodes: [1, 0], props: {} },
+    { id: "r", type: "resistor", nodes: [1, 2], props: { ohms: 470 } },
+    { id: "d", type: "led", nodes: [2, 0], props: { color: "red" } }
+  ], 3), mod.createState(), 0)
+  sameSolve(led, again, "mjs led")
+  L.lessons.forEach(function (lesson) {
+    var nl = B.buildNetlist(lesson.build())
+    var bare = { nodeCount: nl.nodeCount, ground: nl.ground, elements: nl.elements }
+    sameSolve(E.solve(bare, E.createState(), 0), mod.solve(bare, mod.createState(), 0), "mjs " + lesson.id)
+  })
+  console.log("worker modules ok", L.lessons.length, "lessons")
+}).catch(function (err) {
+  console.error(err)
+  process.exit(1)
+})

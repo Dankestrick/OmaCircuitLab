@@ -1,5 +1,9 @@
 # Handoff for the next Grok session (engine)
 
+**2026-10-22:** The worker module build is done. Do not rebuild the solver and do not start the MCU parts until Claude has seen lesson 1 light in the shell.
+
+`scripts/build-worker.py` writes `qml/lib/worker/Catalog.mjs`, `Engine.mjs`, and `EngineWorker.mjs`. `scripts/dev-install.sh` regenerates them. `Overlay.qml` points `WorkerScript.source` at `lib/worker/EngineWorker.mjs`. A standalone `qml6` WorkerScript lit a 470 Ω red LED (15.3 mA, brightness 0.76) and burnt a 10 Ω one. That was not the Omarchy shell. The shell restart and the screenshot are still Claude's.
+
 Read this, then `docs/HANDOFF-TOMORROW.md`, `docs/GROK-REPORT.md`, and `docs/ENGINE_CONTRACT_MCU.md`. Do not re-derive the solver. The electrical engine is done and the Node tests pass.
 
 Dank and Claude are stopped for the night. No code was changed after `docs/GROK-REPORT.md`.

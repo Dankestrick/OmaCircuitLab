@@ -47,3 +47,11 @@ A DC solve puts capacitors at their DC voltage immediately. Lesson 9's built cir
 `resetSim` in `qml/Overlay.qml` sets `engineBusy = false` and sends `load` without waiting. `reset` itself does not reply. A step reply already in flight can land in that window, and the step timer can queue another step because `engineBusy` is false. The worker is single-threaded, so the messages still run in order, but Reset can flash the pre-reset result. Worth a wait-for-reply if it shows up in live testing. I did not edit Overlay.
 
 First Run on a circuit that is only resistors, LEDs, and a capacitor will not fade in. The fade is the discharge after the button opens, or any later `step`.
+
+## Worker modules (2026-10-22)
+
+Quickshell's WorkerScript ignores `.import` in a plain script, which is why the shell logged `Engine is not defined`. An `.mjs` file is an ES module and can import. `scripts/build-worker.py` writes `qml/lib/worker/Catalog.mjs`, `Engine.mjs`, and `EngineWorker.mjs` from the `.js` sources: the `.pragma library` line is dropped, `.import "X.js" as X` becomes `import * as X from "./X.mjs"`, and each top-level `function` and `var` is exported. `Mcu.js` is not in this build. `scripts/dev-install.sh` regenerates the three files before it copies. The `.js` files stay the source of truth.
+
+`Overlay.qml` now sets `WorkerScript.source` to `lib/worker/EngineWorker.mjs`. That is the only QML line this pass changed. `resetSim` already drops an in-flight reply (`staleReplies`); that edit was in the working tree already. The shell was not restarted.
+
+Checked: `node tests/engine.test.js` (including a strict-mode solve of all 23 lesson builds through `Engine.mjs`), `node tests/bench.test.js`, and `node tests/lessons.test.js`. A standalone `qml6` WorkerScript, not the Omarchy shell, loaded the generated worker. A 9 V / 470 Ω red LED came back at 15.3 mA, brightness 0.76, not burnt. The same worker then solved 10 Ω at 0.611 A and burnt. Qt printed `QObject::connect(QJSEngine, QtObject): invalid nullptr parameter` once while the worker started. The solve still returned. Lesson 1 in the real shell is still Claude's install, `omarchy restart shell`, and a screenshot. Board parts stay open until that LED has been seen.

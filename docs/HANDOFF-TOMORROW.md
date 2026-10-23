@@ -92,10 +92,10 @@ Grok's `EngineWorker.js` exists, but in the shell it fails with `ReferenceError:
 
 ## Next steps, in order
 
-1. **Make Run work in the shell:** the `.mjs` worker build described above. Grok's handoff (`docs/HANDOFF-GROK-TOMORROW.md`, "Tomorrow's first job") has the exact steps:
-   - Generate only Catalog, Engine and EngineWorker; leave `Mcu` out until the board task.
-   - If `.mjs` fails inside Quickshell, fall back to one generated classic script.
-   - Claude changes the one `WorkerScript.source` line in Overlay.qml and makes `resetSim` wait for the next reply.
+1. **Make Run work in the shell.** The `.mjs` build is in the tree as of 2026-10-22 (`scripts/build-worker.py`, `qml/lib/worker/*.mjs`, `WorkerScript.source` is `lib/worker/EngineWorker.mjs`). What is left of this step is the shell check below. Grok's handoff (`docs/HANDOFF-GROK-TOMORROW.md`, "Tomorrow's first job") has the exact steps:
+   - Generate only Catalog, Engine and EngineWorker; leave `Mcu` out until the board task. Done.
+   - If `.mjs` fails inside Quickshell, fall back to one generated classic script. The standalone `qml6` worker succeeded, so this waits on the shell check.
+   - `WorkerScript.source` is already `lib/worker/EngineWorker.mjs`. `resetSim` already drops an in-flight reply.
 2. **Claude:** install, restart the shell, open lesson 1 with `"run": true`, screenshot. Confirm the LEDs glow, the warnings show, and a burnt LED smokes (try a 10 Ω resistor). Have Dank try it.
 3. **Grok:** the board coupling from `ENGINE_CONTRACT_MCU.md`, one part at a time in the order in Grok's handoff (sevenSeg → omaduino pins → step order → hcsr04 → servo → motorDriver/robotCar/setProp). **Claude:** test lessons 17–23 in the app, including the robot arena.
 4. **Claude:** schematic symbols in Inspect. Dank stopped this mid-write; confirm he still wants it before doing it.
