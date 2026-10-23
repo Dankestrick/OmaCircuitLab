@@ -88,3 +88,46 @@ The player in Overlay currently sounds a buzzer only when `on` is true. `tone()`
 - Pin writes, servo angle, and PWM show up one step after the sketch sets them. The echo pin stays at 0 V. The travel time is only what `pulseIn` returns.
 - The 25 ms worker cap is unchanged. 1000 blink steps are 56 ms in Node, so a 33-step frame should fit. If the shell blinks in slow motion, the warm step is the thing to cheapen.
 - Not pushed.
+
+## Worker crash (2026-10-22)
+
+The shell was not restarted by me. QML was not edited. Sound was off, and the tone files are not on this path.
+
+Two Quickshell cores today, both the worker thread (`QQuickWorkerScr`), command `quickshell -n -p /usr/share/omarchy/shell`:
+
+- 937302 at 21:49:40 EDT. SIGSEGV. `si_code` is SI_TKILL because Quickshell's handler calls `raise`. Under that: `MarkStack::drain` ← `GCStateMachine::transition` ← `MemoryManager::allocData` ← `ArrayData::realloc` ← `SimpleArrayData::putArray` ← `CallPropertyLookup` ← `libQt6QmlWorkerScript`.
+- 965280 at 21:52:00 EDT. Same signal and the same re-raise. The trace stops at the handler, so the original fault is not in that dump.
+
+Headless repro, before `e033253`, while `Mcu.mjs` was still the generator interpreter. `QT_QPA_PLATFORM=offscreen qml6`, a window-less `Item` with `WorkerScript` on `qml/lib/worker/EngineWorker.mjs`, lesson 24's build, `{ cmd: "step", dt: 0.001, steps: 33 }` every 33 ms, and `setProp` when the car's rounded distance changes. It died both times, in about a second, on the worker thread, `SEGV_MAPERR` at address 0:
+
+- 978496 at 21:52:43
+- 980742 at 21:52:55
+
+The stack is `IteratorNextForYieldStar::call` four deep, then a null call, then `CallPropertyLookup`, then the WorkerScript message handler. A tiny `yield*` worker in the same harness exits 0. The crash was Mcu's nested generators.
+
+`e033253` already compiles each function to a flat list of steps and runs that on an explicit stack. `delay()` stops between steps. No `function*` is left in `qml/lib`. The installed plugin `Mcu.mjs` matches the repo. I did not write that commit. The Quickshell process running now started at 22:00:51, the same second those files were written, and it has not dumped core since.
+
+Soaks of that interpreter, same harness. None crashed. About 30 ticks a second, so the 33 ms timer was keeping up.
+
+| Worker | Lesson | Time | Result |
+| --- | --- | --- | --- |
+| `EngineWorker.mjs` | robot (24) | 240 s | exit 0, 7273 ticks, `ok` true |
+| `EngineWorker.mjs` | blink (18) | 180 s | exit 0, 5455 ticks |
+| `EngineWorker.mjs` | clamp (12) | 180 s | exit 0, 5455 ticks |
+| `EngineWorkerClassic.js` | robot | 240 s | exit 0, 7273 ticks |
+| `EngineWorkerClassic.js` | blink | 180 s | exit 0, 5455 ticks |
+| `EngineWorkerClassic.js` | clamp | 180 s | exit 0, 5455 ticks |
+
+A 20 s classic robot run on its own (606 ticks) and a 40 s module robot and blink also exited 0.
+
+Leave `WorkerScript.source` on `lib/worker/EngineWorker.mjs`. The module holds, and the classic script holds too. The crash was the generators, and those are already gone.
+
+`scripts/build-worker.py` also writes `qml/lib/worker/EngineWorkerClassic.js`: Catalog, Mcu, and Engine each wrapped in a closure, no imports. Those two files are in the working tree, not committed.
+
+On the long robot runs the serial settles (25 cm on the classic run, 82 cm on the module run) and then keeps printing that number. The worker still returns `ok: true` every tick. Once the rounded distance stops changing, `setProp` stops. The sketch's backup test is `cm < 25`.
+
+Nothing in the step loop needed a new cap. `vm.serial` still trims at 4000 characters down to the last 3000. Call frames are popped on return. `nodeVolts` is replaced each solve. `STEP_BUDGET` is still 400. The worker still gives up a batch after about 25 ms (Node did 3406 steps in 26 ms). Over the 4 minute module robot run, RSS stayed between 128 MB and 141 MB. Blink moved between 134 MB and 154 MB and came back down. That is the collector.
+
+`node tests/mcu.test.js`, `node tests/engine.test.js`, and `node tests/clamp.test.js` pass. The one-time `QObject::connect(QJSEngine, QtObject): invalid nullptr parameter` line is still there. It does not take the worker down.
+
+`e033253` has a `Co-Authored-By` trailer. Commits stay under your name only.
