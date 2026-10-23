@@ -108,3 +108,12 @@ Grok's `EngineWorker.js` exists, but in the shell it fails with `ReferenceError:
 - Mouse interactions are untested by Claude: place, drag, wire, bend drag, button hold, scroll. Ask Dank what feels off.
 - The slider in Inspect pushes undo steps through a 400 ms timer; check that it feels right.
 - "OmaCircuit" is taken on the marketplace (labrat-0's puzzle game), so the name stays OmaCircuitLab.
+
+## 2026-10-22 evening (Claude)
+
+- Run lights LEDs in the shell (lesson 1 checked by screenshot). Dank likes the glow.
+- **Clamp meter** (`clampMeter`, Meters, commit e223a8d): a separate meter with a lead to a jaw that clips on any wire or part leg. It never enters the engine (Overlay filters it out of `load`). `qml/lib/Clamp.js` reads it after each solve: legs from `pinCurrents`, wires by solving the node's wire network from the part currents. Tests: `tests/clamp.test.js`.
+- **For Grok:** multi-pin parts (pot, slide switch, BJT, MOSFET, TMP36, RGB LED, seven-seg, OmaDuino, servo, HC-SR04, motor driver, robot car) need `pinCurrents: [amps into each pin]` in their result, or the clamp says "doesn't report its leg currents yet" on those legs and on wires in their nodes. Two-pin parts already work from `current`.
+- **Lessons moved:** the new lesson 12 ("Follow the current with a clamp meter") comes after "Two LEDs in parallel". The board lessons are now 18–24, not 17–23.
+- Run now resets the engine first (fresh parts, empty caps). An edit while a part is burnt resets too, so fixing the resistor brings the LED back.
+- Scrolling steps one value per wheel notch. Smooth-scroll mice had been skipping values such as 470 Ω.
