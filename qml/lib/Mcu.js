@@ -18,6 +18,8 @@ var PIN_COUNT = 20              // D0..D13, A0..A5 = 14..19
 var PWM_PINS = { 3: true, 5: true, 6: true, 9: true, 10: true, 11: true }
 var OP_MICROS = 1               // one statement ≈ 1 µs on a real 16 MHz board
 var STEP_BUDGET = 400           // max steps per run() call: a sketch with no delay() runs slower than a real board but stays cheap on the PC
+var TOKEN_LIMIT = 200000        // tokens one compile may read, #define expansions included
+var NEST_LIMIT = 200            // how deep blocks, brackets and unary operators may nest
 
 var constants = {
   HIGH: 1, LOW: 0, INPUT: 0, OUTPUT: 1, INPUT_PULLUP: 2, LED_BUILTIN: 13,
@@ -32,16 +34,27 @@ var typeNames = { "int": "int", "long": "int", "short": "int", "byte": "int", "c
 // ------------------------------------------------------------------ tokens
 
 function tokenize(src) {
-  var toks = [], i = 0, line = 1, n = src.length
+  var toks = [], i = 0, line = 1, n = src.length, last = -1
   function push(type, value) { toks.push({ type: type, value: value, line: line }) }
+  function fail(at, message) { throw { line: at, message: message } }
+  // Every scan stops at the end of the sketch: past it src[i] is undefined,
+  // and a regex tests that as the text "undefined".
+  function skip(re) { while (i < n && re.test(src[i])) i++ }
   while (i < n) {
+    // Each pass has to use up some of the sketch, so a reader bug shows up
+    // as an error instead of freezing the shell.
+    if (i <= last) fail(line, "The sketch reader got stuck here.")
+    if (toks.length > TOKEN_LIMIT) fail(line, "This sketch is too long.")
+    last = i
     var c = src[i]
     if (c === "\n") { line++; i++; continue }
     if (c === " " || c === "\t" || c === "\r") { i++; continue }
     if (c === "/" && src[i + 1] === "/") { while (i < n && src[i] !== "\n") i++; continue }
     if (c === "/" && src[i + 1] === "*") {
+      var open = line
       i += 2
       while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { if (src[i] === "\n") line++; i++ }
+      if (i >= n) fail(open, "A '/*' comment was never closed with '*/'.")
       i += 2; continue
     }
     if (c === "#") {
@@ -52,13 +65,14 @@ function tokenize(src) {
     }
     if (/[0-9]/.test(c) || (c === "." && /[0-9]/.test(src[i + 1]))) {
       var s = i
-      if (c === "0" && (src[i + 1] === "x" || src[i + 1] === "X")) { i += 2; while (/[0-9a-fA-F]/.test(src[i])) i++ }
-      else if (c === "0" && (src[i + 1] === "b" || src[i + 1] === "B")) { i += 2; while (/[01]/.test(src[i])) i++ }
-      else { while (/[0-9.]/.test(src[i])) i++; if (src[i] === "e" || src[i] === "E") { i++; if (src[i] === "-" || src[i] === "+") i++; while (/[0-9]/.test(src[i])) i++ } }
+      if (c === "0" && (src[i + 1] === "x" || src[i + 1] === "X")) { i += 2; skip(/[0-9a-fA-F]/) }
+      else if (c === "0" && (src[i + 1] === "b" || src[i + 1] === "B")) { i += 2; skip(/[01]/) }
+      else { skip(/[0-9.]/); if (i < n && (src[i] === "e" || src[i] === "E")) { i++; if (i < n && (src[i] === "-" || src[i] === "+")) i++; skip(/[0-9]/) } }
       var text = src.substring(s, i)
       var isFloat = /[.eE]/.test(text) && !/^0[xX]/.test(text)
-      while (/[uUlLfF]/.test(src[i])) { if (src[i] === "f" || src[i] === "F") isFloat = true; i++ }
-      var val = /^0[bB]/.test(text) ? parseInt(text.substring(2), 2) : Number(text)
+      while (i < n && /[uUlLfF]/.test(src[i])) { if (src[i] === "f" || src[i] === "F") isFloat = true; i++ }
+      var val = /^0[bB]/.test(text) ? (text.length > 2 ? parseInt(text.substring(2), 2) : NaN) : Number(text)
+      if (isNaN(val)) fail(line, "I can't read the number '" + text + "'.")
       toks.push({ type: "num", value: val, isFloat: isFloat, line: line })
       continue
     }
@@ -69,13 +83,14 @@ function tokenize(src) {
       continue
     }
     if (c === '"' || c === "'") {
-      var q = c, out = ""
+      var q = c, out = "", opened = line
       i++
       while (i < n && src[i] !== q) {
-        if (src[i] === "\\") { i++; var e = src[i]; out += e === "n" ? "\n" : e === "t" ? "\t" : e === "0" ? "" : e }
+        if (src[i] === "\\") { i++; if (i >= n) break; var e = src[i]; out += e === "n" ? "\n" : e === "t" ? "\t" : e === "0" ? "" : e }
         else { if (src[i] === "\n") line++; out += src[i] }
         i++
       }
+      if (i >= n) fail(opened, q === '"' ? "A string was never closed with '\"'." : "A character was never closed with \"'\".")
       i++
       if (q === "'") toks.push({ type: "num", value: out.length ? out.charCodeAt(0) : 0, isFloat: false, line: line })
       else push("str", out)
@@ -93,9 +108,22 @@ function tokenize(src) {
 
 // ------------------------------------------------------------------ parser
 
-function Parser(toks) { this.t = toks; this.p = 0; this.defines = {} }
-Parser.prototype.peek = function (k) { return this.t[this.p + (k || 0)] }
-Parser.prototype.next = function () { return this.t[this.p++] }
+// budget is shared with the parsers that read #define bodies, so the limits
+// cover a whole compile: tokens counts every token handed to a parser, depth
+// how deep the parse is nested right now.
+function Parser(toks, budget) {
+  this.t = toks; this.p = 0; this.defines = {}
+  this.budget = budget || { tokens: 0, depth: 0 }
+  this.budget.tokens += toks.length
+  if (this.budget.tokens > TOKEN_LIMIT) throw { line: toks[0].line, message: "This sketch is too long, or a #define keeps growing." }
+}
+// Reading never moves past the final "eof" token.
+Parser.prototype.peek = function (k) { return this.t[Math.min(this.p + (k || 0), this.t.length - 1)] }
+Parser.prototype.next = function () { var t = this.t[this.p]; if (t.type !== "eof") this.p++; return t }
+Parser.prototype.enter = function (line) {
+  if (++this.budget.depth > NEST_LIMIT) throw { line: line, message: "This is nested too deeply, or a #define refers to itself." }
+}
+Parser.prototype.leave = function (node) { this.budget.depth--; return node }
 Parser.prototype.is = function (v, k) { var t = this.peek(k); return t.type !== "str" && t.value === v }
 Parser.prototype.eat = function (v) { if (this.is(v)) { this.p++; return true } return false }
 Parser.prototype.expect = function (v, what) {
@@ -204,6 +232,11 @@ Parser.prototype.block = function () {
 }
 
 Parser.prototype.statement = function () {
+  this.enter(this.peek().line)
+  return this.leave(this.statementBody())
+}
+
+Parser.prototype.statementBody = function () {
   var t = this.peek()
   var line = t.line
   if (t.type === "directive") { this.next(); this.directive(t); return { kind: "empty" } }
@@ -298,6 +331,11 @@ Parser.prototype.binary = function (minPrec) {
 }
 
 Parser.prototype.unary = function () {
+  this.enter(this.peek().line)
+  return this.leave(this.unaryBody())
+}
+
+Parser.prototype.unaryBody = function () {
   var t = this.peek()
   if (t.type === "op" && (t.value === "!" || t.value === "-" || t.value === "+" || t.value === "~")) {
     this.next(); return { kind: "un", op: t.value, a: this.unary(), line: t.line }
@@ -344,7 +382,7 @@ Parser.prototype.primary = function () {
       // Splice a #define in place and parse it as an expression.
       var sub = this.defines[t.value].map(function (x) { return { type: x.type, value: x.value, isFloat: x.isFloat, line: t.line } })
       var saved = this.defines
-      var inner = new Parser(sub.concat([{ type: "eof", value: "", line: t.line }]))
+      var inner = new Parser(sub.concat([{ type: "eof", value: "", line: t.line }]), this.budget)
       inner.defines = saved
       return inner.expr()
     }

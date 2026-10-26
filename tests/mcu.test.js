@@ -74,4 +74,40 @@ void loop() { delay(10); }`
   const c = M.compile("#include <Servo.h>\nServo s[200000]; void setup(){} void loop(){}"); const vm = M.create(c.program); vm.run(1000, {})
   assert(/too big/.test(vm.error), vm.error)
 }
+// a sketch that ends in the middle of a token returns quickly with ok or an error (HANCORE #12712)
+{
+  const body = "void setup(){} void loop(){}\n"
+  const endings = ["5", "5u", "5UL", "5.0f", "0x", "0x1F", "0b", "0b101", "1e", "1e+", "1e-3", ".5", "\"abc", "'a", "\"ab\\", "/* never closed", "// last line", "#", "#define", "#define X"]
+  for (const end of endings) {
+    for (const src of [end, body + end, body + "int v = " + end]) {
+      const t0 = Date.now(), c = M.compile(src)
+      assert(Date.now() - t0 < 1000, "compile of " + JSON.stringify(src) + " was quick")
+      assert(c.ok || (c.errors.length && c.errors[0].message), JSON.stringify(src) + " gives ok or an error")
+    }
+  }
+  for (const bad of ["0x", "0b", "1e", "1e+", "\"abc", "'a", "/* never closed"]) assert(!M.compile(body + bad).ok, bad + " is an error")
+  for (const good of ["int v = 0x1F;", "long v = 5UL;", "float v = 5.0f;", "float v = 1e-3;", "int v = 0b101;", "// last line"]) {
+    const c = M.compile(body + good); assert(c.ok, good + " " + JSON.stringify(c.errors))
+  }
+  assert(/never closed/.test(M.compile(body + "char c = 'a").errors[0].message))
+}
+// runaway #defines and deep nesting stop with an error instead of hanging
+{
+  let grow = "#define A0 1\n"
+  for (let k = 1; k <= 40; k++) grow += "#define A" + k + " (A" + (k - 1) + "+A" + (k - 1) + ")\n"
+  const cases = [
+    "#define A A\nint v = A; void setup(){} void loop(){}",
+    "#define A B\n#define B A\nint v = A; void setup(){} void loop(){}",
+    grow + "int v = A40; void setup(){} void loop(){}",
+    "int v = " + "(".repeat(5000) + "1" + ")".repeat(5000) + "; void setup(){} void loop(){}",
+    "void setup(){" + "{".repeat(5000) + "}".repeat(5000) + "} void loop(){}",
+    "int v = " + "-".repeat(5000) + "1; void setup(){} void loop(){}"
+  ]
+  for (const src of cases) {
+    const t0 = Date.now(), c = M.compile(src)
+    assert(Date.now() - t0 < 1000, "compile was quick: " + src.slice(0, 40))
+    assert(!c.ok && c.errors[0].message, src.slice(0, 40) + " is an error")
+  }
+  assert(M.compile("#define LED 13\n#define TWICE (LED*2)\nint v = TWICE; void setup(){} void loop(){}").ok)
+}
 console.log("mcu ok")
